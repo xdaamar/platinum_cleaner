@@ -7,26 +7,19 @@
     <string name="greeting_title">Good Morning, Damar</string>
     <string name="metric_to_reclaim">To Reclaim</string>
     <string name="metric_unit_gb">Gigabytes</string>
+    <string name="metric_unit_mb">Megabytes</string>
+    <string name="metric_unit_kb">Kilobytes</string>
     <string name="metric_subtext">Ready for silent purge</string>
     <string name="system_cache_label">System Cache</string>
-    <string name="system_cache_value">420 MB</string>
+    <string name="system_cache_value">—</string>
     <string name="user_cache_label">User Cache</string>
-    <string name="user_cache_value">780 MB</string>
-    <string name="clean_button_initial">Clean Now — 1.2 GB</string>
-    <string name="clean_button_purging">Purging silently...</string>
+    <string name="user_cache_value">—</string>
+    <string name="clean_button_initial">Clean Now</string>
+    <string name="clean_button_purging">Purging silently\u2026</string>
     <string name="clean_button_done">Cleaned — 0 B Overhead</string>
     <string name="largest_cache_title">Largest Cache</string>
-    <string name="largest_cache_view_all">View All (18)</string>
+    <string name="largest_cache_view_all">View All</string>
     <string name="badge_primary">Primary</string>
-    <string name="app_telegram_name">Telegram</string>
-    <string name="app_telegram_package">org.telegram.messenger</string>
-    <string name="app_telegram_size">640 MB</string>
-    <string name="app_spotify_name">Spotify</string>
-    <string name="app_spotify_package">com.spotify.music</string>
-    <string name="app_spotify_size">380 MB</string>
-    <string name="app_chrome_name">Google Chrome</string>
-    <string name="app_chrome_package">com.android.chrome</string>
-    <string name="app_chrome_size">180 MB</string>
     <string name="whitelist_insight_text">Whitelist protection active. Essential offline caches for WhatsApp and System Maps are safeguarded from deep cleanup routines.</string>
     <string name="nav_dashboard">Dashboard</string>
     <string name="nav_analytics">Analytics</string>
@@ -34,4 +27,17 @@
     <string name="nav_settings">Settings</string>
     <string name="cd_quick_settings">Quick Settings</string>
     <string name="cd_profile">User Profile</string>
+
+    <!-- Permission Onboarding -->
+    <string name="permission_title">Usage Access Required</string>
+    <string name="permission_body">To read the real cache size of your apps, Platinum Cleaner needs the Usage Access permission. No data leaves your device.</string>
+    <string name="permission_button">Enable in Settings</string>
+    <string name="permission_badge">One-Time Setup</string>
+
+    <!-- Loading state -->
+    <string name="loading_text">Reading device cache\u2026</string>
+    <string name="error_text">Could not read cache data</string>
+
+    <!-- Accessibility Service -->
+    <string name="accessibility_service_description">Platinum Cleaner uses Accessibility Service solely to automate cache clearing in Android Settings. It never reads or interacts with any other app.</string>
 </resources>

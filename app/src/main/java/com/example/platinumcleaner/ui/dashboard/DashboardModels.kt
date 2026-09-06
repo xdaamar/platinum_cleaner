@@ -32,3 +32,27 @@ enum class DashboardNavTab(
     RULES(R.string.nav_rules, R.drawable.ic_nav_rules),
     SETTINGS(R.string.nav_settings, R.drawable.ic_nav_settings)
 }
+
+// Real data models for Sprint 2
+@Immutable
+data class AppInfo(
+    val packageName: String,
+    val appName: String,
+    val cacheBytes: Long,
+    val isSystemApp: Boolean = false
+) {
+    val cacheSizeFormatted: String
+        get() = when {
+            cacheBytes >= 1_073_741_824L -> String.format("%.1f GB", cacheBytes / 1_073_741_824.0)
+            cacheBytes >= 1_048_576L -> String.format("%.0f MB", cacheBytes / 1_048_576.0)
+            cacheBytes >= 1_024L -> String.format("%.0f KB", cacheBytes / 1_024.0)
+            else -> "$cacheBytes B"
+        }
+}
+
+sealed class UiState<out T> {
+    object Loading : UiState<Nothing>()
+    data class Success<T>(val data: T) : UiState<T>()
+    data class Error(val message: String) : UiState<Nothing>()
+    object PermissionRequired : UiState<Nothing>()
+}

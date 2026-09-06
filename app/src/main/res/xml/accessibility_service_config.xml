@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AccessibilityService Configuration — Platinum Cleaner
+    =========================================================
+    SECURITY CRITICAL (03_security_protocols.md):
+
+    packageNames = "com.android.settings"
+    Membatasi service HANYA aktif ketika user berada di dalam aplikasi
+    Settings bawaan Android. Service tidak akan merespons event dari
+    aplikasi LAIN (perbankan, browser, pesan, dsb).
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowContentChanged|typeViewClicked|typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:packageNames="com.android.settings"
+    android:settingsActivity=".MainActivity" />

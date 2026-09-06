@@ -1,7 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Zero Network Policy: Absolutely NO INTERNET or ACCESS_NETWORK_STATE permissions -->
+    <!--
+        Zero Network Policy (03_security_protocols.md):
+        Tidak ada izin INTERNET atau ACCESS_NETWORK_STATE.
+        Aplikasi ini 100% offline.
+    -->
+
+    <!--
+        QUERY_ALL_PACKAGES: Diperlukan untuk membaca daftar SEMUA aplikasi
+        yang terinstall di perangkat. Tanpa ini, PackageManager hanya
+        mengembalikan package milik kita sendiri pada Android 11+.
+        Diizinkan untuk utility/cleaner app berdasarkan Google Play policy.
+    -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!--
+        PACKAGE_USAGE_STATS: Diperlukan untuk membaca ukuran cache per-app
+        via StorageStatsManager. Ini adalah "special permission" — tidak bisa
+        di-request via dialog runtime. User harus diarahkan manual ke:
+        Settings -> Apps -> Special App Access -> Usage Access.
+    -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions"
+        xmlns:tools="http://schemas.android.com/tools"/>
 
     <application
         android:allowBackup="false"
@@ -10,6 +32,7 @@
         android:roundIcon="@android:drawable/sym_def_app_icon"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -19,6 +42,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            PlatinumCleanerService — AccessibilityService.
+            SECURITY: Dikonfigurasi via xml/accessibility_service_config.xml untuk
+            hanya aktif pada package "com.android.settings".
+        -->
+        <service
+            android:name=".service.PlatinumCleanerService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
     </application>
 
 </manifest>
