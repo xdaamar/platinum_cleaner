@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -68,15 +70,15 @@ fun TopHeaderBar(
     onProfileClick: () -> Unit = {}
 ) {
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(Dimens.HeaderHeight),
-        color = PlatinumSurface.copy(alpha = 0.92f),
+        modifier = modifier.fillMaxWidth(),
+        color = PlatinumSurface.copy(alpha = 0.94f),
         shadowElevation = Dimens.ElevationSoft
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
+                .height(Dimens.HeaderHeight)
                 .padding(horizontal = Dimens.SpacingLG),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -583,15 +585,15 @@ fun PlatinumBottomNav(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(Dimens.BottomNavHeight),
-        color = PlatinumSurfaceContainerLowest.copy(alpha = 0.94f),
+        modifier = modifier.fillMaxWidth(),
+        color = PlatinumSurfaceContainerLowest.copy(alpha = 0.96f),
         shadowElevation = 8.dp
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
+                .height(Dimens.BottomNavHeight)
                 .padding(horizontal = Dimens.SpacingXS),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically
