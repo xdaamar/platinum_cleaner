@@ -1,16 +1,51 @@
-*.iml
-.gradle
-/local.properties
-/.idea
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated build files & caches
+bin/
+gen/
+out/
 build/
 app/build/
+.gradle/
+
+# Local configuration & environment secrets (CRITICAL)
+local.properties
+
+# Keystore & Certificate signing files (CRITICAL SECURITY)
+*.jks
+*.keystore
+
+# Log & Heap dump files
+*.log
 *.hprof
 
-# Docs
+# Android Studio & IntelliJ IDEA cache/configs
+*.iml
+.idea/
+.navigation/
+captures/
+
+# External native build folder
+.externalNativeBuild
+.cxx/
+
+# Google Services (Firebase / API credentials)
+google-services.json
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Documentation & Internal Design/PRD (Local only)
 /Docs
