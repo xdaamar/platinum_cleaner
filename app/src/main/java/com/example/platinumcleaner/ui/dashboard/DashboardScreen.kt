@@ -180,18 +180,20 @@ fun DashboardScreen(
         }
     ) { innerPadding ->
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(PlatinumBackground)
-                .padding(
-                    top = innerPadding.calculateTopPadding() + Dimens.SpacingMD,
-                    bottom = innerPadding.calculateBottomPadding() + Dimens.Spacing2XL,
-                    start = Dimens.SpacingLG,
-                    end = Dimens.SpacingLG
-                ),
-            verticalArrangement = Arrangement.spacedBy(Dimens.SpacingXL)
-        ) {
+        // Sprint 5: Box wrapper agar overlay bisa diposisikan di BottomStart
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(PlatinumBackground)
+                    .padding(
+                        top = innerPadding.calculateTopPadding() + Dimens.SpacingMD,
+                        bottom = innerPadding.calculateBottomPadding() + Dimens.Spacing2XL,
+                        start = Dimens.SpacingLG,
+                        end = Dimens.SpacingLG
+                    ),
+                verticalArrangement = Arrangement.spacedBy(Dimens.SpacingXL)
+            ) {
             item { GreetingSection() }
             item { HeroStorageCard(state = metricState) }
             item {
@@ -228,8 +230,18 @@ fun DashboardScreen(
             }
 
             item { Spacer(modifier = Modifier.height(Dimens.SpacingLG)) }
-        }
-    }
+        } // end LazyColumn
+
+        // Sprint 5: Progress overlay — muncul di kiri bawah saat cleaning aktif
+        CleaningProgressOverlay(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(bottom = innerPadding.calculateBottomPadding()),
+            viewModel = viewModel
+        )
+
+        } // end Box
+    } // end Scaffold
 }
 
 // ===================================================

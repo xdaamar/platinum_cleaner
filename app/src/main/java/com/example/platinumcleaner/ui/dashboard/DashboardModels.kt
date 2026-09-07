@@ -24,7 +24,11 @@ data class StorageMetricState(
     val isCleaning: Boolean = false,
     val cleaningTarget: String? = null,
     val cleaningError: String? = null,
-    val snackbarMessage: String? = null
+    val snackbarMessage: String? = null,
+    // Sprint 5: Progress overlay fields
+    val currentCleanIndex: Int = 0,
+    val totalCleanApps: Int = 0,
+    val currentCleanAppName: String? = null
 )
 
 enum class DashboardNavTab(

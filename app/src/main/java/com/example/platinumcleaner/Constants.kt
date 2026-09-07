@@ -58,4 +58,10 @@ object Constants {
     // === AUTO-CLEAN TIMING (ms) ===
     const val NAVIGATION_DELAY_MS = 600L
     const val PHASE_TIMEOUT_MS = 5_000L
+
+    // Sprint 5: 4 detik pacing anti-bot (ai_task.md §3.2)
+    const val PACING_DELAY_MS = 4_000L
+
+    // Sprint 5: Hard timeout per app
+    const val HARD_TIMEOUT_MS = 15_000L
 }

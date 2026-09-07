@@ -6,18 +6,11 @@ import kotlinx.coroutines.flow.asSharedFlow
 /**
  * ServiceEventBus — Jembatan komunikasi reaktif antara AccessibilityService dan ViewModel.
  *
- * ARSITEKTUR:
- * AccessibilityService berjalan di lifecycle terpisah dari ViewModel/Composable.
- * Kita tidak bisa inject ViewModel ke Service secara langsung (memory leak).
+ * Sprint 5: Tambah event baru:
+ * - ProgressUpdate: update real-time untuk overlay progress
+ * - AllCompleted: semua app dalam antrian sudah selesai dibersihkan
  *
- * SOLUSI: Singleton SharedFlow dengan replay = 0.
- *   - replay = 0: Tidak ada event lama yang di-emit ulang ke subscriber baru.
- *     Ini mencegah ViewModel yang baru di-create menerima event dari sesi cleaning
- *     sebelumnya — anti memory leak dan anti ghost event.
- *   - SharedFlow (bukan StateFlow): Kita ingin event satu kali (one-shot), bukan
- *     state persisten. "Clear cache berhasil" harus hanya diproses sekali.
- *
- * Sesuai 04_performance_budget.md: Tidak ada blocking call. Semua reaktif via Flow.
+ * replay = 0: Tidak ada event lama yang di-replay — anti ghost event & anti memory leak.
  */
 object ServiceEventBus {
     private val _events = MutableSharedFlow<CleanerEvent>(replay = 0)
@@ -29,19 +22,28 @@ object ServiceEventBus {
 }
 
 /**
- * Sealed class yang merepresentasikan semua kemungkinan event dari Auto-Clean Engine.
- * Sesuai 02_coding_standards.md: Type Safety, tidak ada raw String untuk status.
+ * Sealed class event dari Auto-Clean Engine V2.
  */
 sealed class CleanerEvent {
-    /** Service mulai mengarahkan user ke halaman app di Settings. */
+    /** Service mulai navigasi ke Settings untuk app target. */
     data class Started(val packageName: String) : CleanerEvent()
 
-    /** Clear Cache berhasil dilakukan untuk app target. */
+    /**
+     * Sprint 5: Update progress real-time untuk overlay.
+     * Di-emit setiap kali service berpindah ke app berikutnya.
+     */
+    data class ProgressUpdate(
+        val currentIndex: Int,
+        val totalApps: Int,
+        val currentAppName: String
+    ) : CleanerEvent()
+
+    /** Clear Cache berhasil untuk satu app. */
     data class Success(val packageName: String) : CleanerEvent()
 
-    /**
-     * Proses gagal — node tidak ditemukan dalam timeout, atau service diinterupsi.
-     * @param reason Pesan deskriptif untuk debugging. Tidak ditampilkan langsung ke user.
-     */
+    /** Proses gagal — timeout, node tidak ditemukan, atau user cancel. */
     data class Failed(val packageName: String, val reason: String) : CleanerEvent()
+
+    /** Sprint 5: Semua app dalam antrian sudah selesai diproses. */
+    object AllCompleted : CleanerEvent()
 }

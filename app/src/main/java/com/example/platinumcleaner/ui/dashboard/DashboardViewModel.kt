@@ -20,12 +20,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * ViewModel untuk DashboardScreen.
+ * DashboardViewModel — Sprint 5 Update.
  *
- * Sprint 4 Hardening:
- * - Guard double-execution di initiateCleanForApp()
- * - Snackbar manusiawi untuk error & sukses
- * - refreshData() untuk dipanggil dari ON_RESUME lifecycle observer
+ * Perubahan:
+ * - Handle CleanerEvent.ProgressUpdate → update overlay fields real-time
+ * - Handle CleanerEvent.AllCompleted → reset state dan reload data
+ * - triggerCleanLargest() tetap clean satu app (entry point utama)
+ * - triggerCleanAll() baru untuk batch mode
  */
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -52,7 +53,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun loadData() {
         val context = getApplication<Application>()
         if (!PermissionHelper.hasUsageStatsPermission(context)) {
-            Log.d(Constants.TAG_VIEWMODEL, "Usage Access belum diberikan")
             _needsPermission.value = true
             _appsState.value = UiState.PermissionRequired
             return
@@ -61,15 +61,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         fetchAppsWithCache()
     }
 
-    /**
-     * Dipanggil saat app kembali ke foreground (ON_RESUME dari DashboardScreen).
-     * Hanya fetch ulang jika tidak sedang ada sesi cleaning aktif.
-     */
     fun refreshData() {
-        if (CleanSessionManager.isActive) {
-            Log.d(Constants.TAG_VIEWMODEL, "refreshData() diabaikan — sesi cleaning masih aktif")
-            return
-        }
+        if (CleanSessionManager.isActive) return
         loadData()
     }
 
@@ -85,24 +78,25 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         isPurging = false,
                         isCleaned = false,
                         isCleaning = false,
-                        cleaningTarget = null
+                        cleaningTarget = null,
+                        currentCleanIndex = 0,
+                        totalCleanApps = 0,
+                        currentCleanAppName = null
                     )
                 }
-                if (state is UiState.PermissionRequired) {
-                    _needsPermission.value = true
-                }
+                if (state is UiState.PermissionRequired) _needsPermission.value = true
             }
         }
     }
 
     // ===================================================
-    // ServiceEventBus Observer (no memory leak — viewModelScope)
+    // ServiceEventBus Observer (viewModelScope → no memory leak)
     // ===================================================
 
     private fun observeServiceEvents() {
         viewModelScope.launch {
             ServiceEventBus.events.collect { event ->
-                Log.d(Constants.TAG_VIEWMODEL, "Event dari Service: $event")
+                Log.d(Constants.TAG_VIEWMODEL, "Event dari Service V2: $event")
                 handleServiceEvent(event)
             }
         }
@@ -115,42 +109,55 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     isCleaning = true,
                     cleaningTarget = event.packageName,
                     cleaningError = null,
-                    snackbarMessage = null
+                    snackbarMessage = null,
+                    currentCleanIndex = CleanSessionManager.currentIndex + 1,
+                    totalCleanApps = CleanSessionManager.totalApps,
+                    currentCleanAppName = event.packageName
+                )
+            }
+
+            // Sprint 5: Update overlay real-time
+            is CleanerEvent.ProgressUpdate -> {
+                _metricState.value = _metricState.value.copy(
+                    isCleaning = true,
+                    currentCleanIndex = event.currentIndex,
+                    totalCleanApps = event.totalApps,
+                    currentCleanAppName = event.currentAppName,
+                    cleaningTarget = event.currentAppName
                 )
             }
 
             is CleanerEvent.Success -> {
-                Log.d(Constants.TAG_VIEWMODEL, "✅ Berhasil: ${event.packageName}")
-                _metricState.value = _metricState.value.copy(
-                    isCleaning = false,
-                    cleaningTarget = null,
-                    isPurging = false,
-                    isCleaned = true,
-                    reclaimableAmount = "0.0",
-                    sweepProgress = 0f,
-                    snackbarMessage = "Cache berhasil dibersihkan ✓"
-                )
-                // Reload data segar setelah 1 detik
-                viewModelScope.launch {
-                    delay(1_000)
-                    loadData()
+                // Untuk batch mode, jangan langsung reset — tunggu AllCompleted
+                if (CleanSessionManager.totalApps <= 1) {
+                    _metricState.value = _metricState.value.copy(
+                        isCleaning = false,
+                        cleaningTarget = null,
+                        isPurging = false,
+                        isCleaned = true,
+                        reclaimableAmount = "0.0",
+                        sweepProgress = 0f,
+                        snackbarMessage = "Cache berhasil dibersihkan ✓"
+                    )
+                    viewModelScope.launch {
+                        delay(1_000)
+                        loadData()
+                    }
                 }
             }
 
             is CleanerEvent.Failed -> {
-                Log.e(Constants.TAG_VIEWMODEL, "❌ Gagal: ${event.reason}")
-                // Terjemahkan reason teknis menjadi pesan manusiawi
                 val humanMessage = when {
                     event.reason.contains("cancelled", ignoreCase = true) ->
                         "Pembersihan dibatalkan."
-                    event.reason.contains("not recognized", ignoreCase = true) ->
-                        "Tidak dapat menemukan tombol hapus cache. Silakan hapus manual di Pengaturan."
+                    event.reason.contains("not recognized", ignoreCase = true) ||
+                            event.reason.contains("not found", ignoreCase = true) ->
+                        "Tidak dapat menemukan tombol hapus cache. Silakan hapus manual."
                     event.reason.contains("Interrupted", ignoreCase = true) ->
                         "Proses terganggu oleh sistem. Silakan coba lagi."
-                    event.reason.contains("Timeout", ignoreCase = true) ->
-                        "Navigasi terlalu lambat. Pastikan Accessibility Service aktif, lalu coba lagi."
-                    else ->
-                        "Pembersihan gagal. Silakan hapus cache secara manual."
+                    event.reason.contains("timeout", ignoreCase = true) ->
+                        "Navigasi terlalu lambat. Pastikan Accessibility Service aktif."
+                    else -> "Pembersihan gagal. Silakan hapus cache secara manual."
                 }
                 _metricState.value = _metricState.value.copy(
                     isCleaning = false,
@@ -160,24 +167,39 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     snackbarMessage = humanMessage
                 )
             }
+
+            // Sprint 5: Semua app dalam antrian selesai
+            is CleanerEvent.AllCompleted -> {
+                Log.d(Constants.TAG_VIEWMODEL, "🏁 Semua app selesai dibersihkan")
+                _metricState.value = _metricState.value.copy(
+                    isCleaning = false,
+                    isPurging = false,
+                    isCleaned = true,
+                    reclaimableAmount = "0.0",
+                    sweepProgress = 0f,
+                    cleaningTarget = null,
+                    currentCleanIndex = 0,
+                    totalCleanApps = 0,
+                    currentCleanAppName = null,
+                    snackbarMessage = "Semua cache berhasil dibersihkan ✓"
+                )
+                viewModelScope.launch {
+                    delay(1_000)
+                    loadData()
+                }
+            }
         }
     }
 
     // ===================================================
-    // Auto-Clean Trigger
+    // Clean Triggers
     // ===================================================
 
-    /**
-     * Sprint 4: Guard double-execution.
-     * Jika CleanSessionManager.isActive → skip, jangan buka Settings dua kali.
-     */
     fun initiateCleanForApp(packageName: String) {
         val context = getApplication<Application>()
-
-        // GUARD: Tolak jika sesi sebelumnya masih aktif
         val sessionStarted = CleanSessionManager.startSession(packageName)
         if (!sessionStarted) {
-            Log.w(Constants.TAG_VIEWMODEL, "Sesi masih aktif — request diabaikan (anti-spam)")
+            Log.w(Constants.TAG_VIEWMODEL, "Sesi masih aktif — diabaikan")
             return
         }
 
@@ -186,7 +208,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             isCleaning = true,
             cleaningTarget = packageName,
             cleaningError = null,
-            snackbarMessage = null
+            snackbarMessage = null,
+            currentCleanIndex = 1,
+            totalCleanApps = 1,
+            currentCleanAppName = packageName
         )
 
         viewModelScope.launch {
@@ -198,29 +223,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             Uri.parse("package:$packageName")
         ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         context.startActivity(intent)
-
-        Log.d(Constants.TAG_VIEWMODEL, "Membuka Settings untuk: $packageName")
     }
 
     fun triggerCleanLargest() {
         val state = _appsState.value
         if (state is UiState.Success && state.data.isNotEmpty()) {
             initiateCleanForApp(state.data.first().packageName)
-        } else {
-            viewModelScope.launch {
-                _metricState.value = _metricState.value.copy(isPurging = true)
-                delay(1_400)
-                _metricState.value = _metricState.value.copy(
-                    isPurging = false,
-                    isCleaned = true,
-                    reclaimableAmount = "0.0",
-                    sweepProgress = 0f
-                )
-            }
         }
     }
 
-    /** Hapus snackbar message setelah ditampilkan (one-shot). */
     fun onSnackbarShown() {
         _metricState.value = _metricState.value.copy(snackbarMessage = null)
     }

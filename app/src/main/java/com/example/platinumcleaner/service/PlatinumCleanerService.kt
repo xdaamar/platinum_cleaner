@@ -2,53 +2,44 @@ package com.example.platinumcleaner.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.os.Handler
-import android.os.Looper
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 import com.example.platinumcleaner.Constants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * PlatinumCleanerService — Auto-Clean Engine (Sprint 4: Hardened).
+ * PlatinumCleanerService — Auto-Clean Engine V2 (Sprint 5).
  *
  * ========================================================
  * SECURITY CRITICAL — 03_security_protocols.md
  * ========================================================
- * HUKUM BESI BARIS PERTAMA onAccessibilityEvent():
- * Jika packageName != SETTINGS_PACKAGE → return. Titik.
+ * BARIS PERTAMA onAccessibilityEvent(): packageName guard. Titik.
  *
- * Sprint 4 Hardening:
- * - onInterrupt(): bersihkan semua resource + emit Failed
- * - onDestroy(): cancel scope + remove all Handler callbacks
- * - Semua AccessibilityNodeInfo access dalam try-catch (DeadObjectException)
- * - Deteksi user tekan Back (packageName kembali ke app kita)
- * - Retry Fase 2 max 3x dengan delay 1 detik (fail-fast OEM compatibility)
+ * Sprint 5 Changes vs V1:
+ * - Ganti Handler.postDelayed → coroutine + delay(4000) (non-blocking, presisi)
+ * - Ganti findAccessibilityNodeInfosByText → AccessibilityNodeHelper.findNodeByPartialText()
+ * - Hard timeout 15 detik per app via withTimeoutOrNull(15_000)
+ * - Batch mode: setelah Success, ambil app berikutnya dari CleanSessionManager
+ * - Emit ProgressUpdate untuk real-time overlay
+ *
+ * Sesuai 04_performance_budget.md: delay() via coroutine, BUKAN Thread.sleep()
  */
 class PlatinumCleanerService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var currentPhase: CleanPhase = CleanPhase.IDLE
-    private var timeoutRunnable: Runnable? = null
-
-    // Sprint 4: Retry counter untuk Fase 2
-    private var clearCacheRetryCount = 0
-    private val maxClearCacheRetries = 3
-
-    private enum class CleanPhase {
-        IDLE,
-        LOOKING_FOR_STORAGE,
-        LOOKING_FOR_CLEAR_CACHE,
-        CONFIRMING,
-        DONE
-    }
+    // Flag untuk mencegah multiple coroutine dijalankan untuk event yang sama
+    @Volatile
+    private var isProcessingEvent = false
 
     // ===================================================
     // Lifecycle
@@ -64,32 +55,21 @@ class PlatinumCleanerService : AccessibilityService() {
             flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
             notificationTimeout = 100L
         }
-        Log.d(Constants.TAG_SERVICE, "Service tersambung dan aktif")
+        Log.d(Constants.TAG_SERVICE, "V2 Service tersambung")
     }
 
-    /**
-     * Sprint 4: onInterrupt() — sistem Android menginterupsi service.
-     * Wajib bersihkan semua state agar tidak ada yang "nyangkut".
-     * Sesuai 04_performance_budget.md: Resource & Memory Management.
-     */
     override fun onInterrupt() {
-        Log.w(Constants.TAG_SERVICE, "Service diinterupsi oleh sistem — membersihkan semua state")
-        abortSession("Interrupted by system")
+        Log.w(Constants.TAG_SERVICE, "Service diinterupsi — membersihkan state")
+        isProcessingEvent = false
+        abortCurrentSession("Interrupted by system")
     }
 
-    /**
-     * Sprint 4: onDestroy() — service dihentikan.
-     * Cancel semua coroutine dan Handler callbacks untuk mencegah memory leak.
-     */
     override fun onDestroy() {
         super.onDestroy()
-        // Bersihkan semua resource sesuai 04_performance_budget.md
         serviceScope.cancel()
-        mainHandler.removeCallbacksAndMessages(null)
-        if (CleanSessionManager.isActive) {
-            CleanSessionManager.endSession()
-        }
-        Log.d(Constants.TAG_SERVICE, "Service dihentikan — semua resource dibersihkan")
+        isProcessingEvent = false
+        if (CleanSessionManager.isActive) CleanSessionManager.endSession()
+        Log.d(Constants.TAG_SERVICE, "V2 Service dihentikan — semua resource dibersihkan")
     }
 
     // ===================================================
@@ -100,221 +80,234 @@ class PlatinumCleanerService : AccessibilityService() {
         event ?: return
 
         // =========================================
-        // HUKUM BESI KEAMANAN (03_security_protocols.md) — BARIS PERTAMA
-        // Abaikan SEMUA event dari luar Settings.
+        // HUKUM BESI — BARIS PERTAMA
         // =========================================
         if (event.packageName != Constants.SETTINGS_PACKAGE) {
-            // Sprint 4: Deteksi user tekan Back — kembali ke app kita
+            // Deteksi user tekan Back — kembali ke app kita
             if (CleanSessionManager.isActive &&
                 event.packageName == Constants.OUR_PACKAGE_NAME
             ) {
-                Log.w(Constants.TAG_SERVICE, "User kembali ke app utama — sesi dibatalkan")
-                abortSession("User cancelled")
+                Log.w(Constants.TAG_SERVICE, "User kembali ke app — sesi dibatalkan")
+                abortCurrentSession("User cancelled")
             }
             return
         }
 
         if (!CleanSessionManager.isActive) return
 
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        ) return
+        // Hanya proses TYPE_WINDOW_STATE_CHANGED untuk trigger fase baru
+        // Ini menghindari spam dari TYPE_WINDOW_CONTENT_CHANGED yang terlalu sering
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
-        Log.d(Constants.TAG_SERVICE, "Event di Settings — phase: $currentPhase")
-
-        when (currentPhase) {
-            CleanPhase.IDLE -> transitionTo(CleanPhase.LOOKING_FOR_STORAGE)
-            CleanPhase.LOOKING_FOR_STORAGE -> tryNavigateToStorage()
-            CleanPhase.LOOKING_FOR_CLEAR_CACHE -> tryClickClearCache()
-            CleanPhase.CONFIRMING -> tryConfirmDialog()
-            CleanPhase.DONE -> { /* no-op */ }
+        // Guard: jangan jalankan coroutine baru jika masih ada yang berjalan
+        if (isProcessingEvent) {
+            Log.d(Constants.TAG_SERVICE, "Event diabaikan — masih processing")
+            return
         }
+
+        Log.d(Constants.TAG_SERVICE, "Window state changed di Settings — memulai navigasi V2")
+        startNavigationCoroutine()
     }
 
     // ===================================================
-    // Phase 1: Cari dan klik menu Storage
+    // V2: Coroutine-based Navigation dengan 4 Detik Pacing
     // ===================================================
 
-    @Suppress("DEPRECATION")
-    private fun tryNavigateToStorage() {
-        // Sprint 4: try-catch untuk DeadObjectException / NPE
-        try {
-            val root = rootInActiveWindow ?: return
-
-            val storageNode = findNodeByLabels(root, Constants.STORAGE_LABELS)
-            if (storageNode != null) {
-                Log.d(Constants.TAG_SERVICE, "Storage ditemukan: '${storageNode.text}'")
-                storageNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                storageNode.recycle()
-
-                mainHandler.postDelayed({
-                    clearCacheRetryCount = 0 // reset retry counter
-                    transitionTo(CleanPhase.LOOKING_FOR_CLEAR_CACHE)
-                }, Constants.NAVIGATION_DELAY_MS)
-            }
-
-            root.recycle()
-        } catch (e: Exception) {
-            Log.e(Constants.TAG_SERVICE, "Error di fase Storage: ${e.message}")
-            abortSession("Exception di fase Storage: ${e.javaClass.simpleName}")
-        }
-    }
-
-    // ===================================================
-    // Phase 2: Cari dan klik Clear Cache (dengan retry 3x)
-    // ===================================================
-
-    @Suppress("DEPRECATION")
-    private fun tryClickClearCache() {
-        try {
-            val root = rootInActiveWindow ?: run {
-                // rootInActiveWindow null → window sudah berubah atau user back
-                abortSession("Window tidak ditemukan di fase Clear Cache")
-                return
-            }
-
-            val clearCacheNode = findNodeByLabels(root, Constants.CLEAR_CACHE_LABELS)
-            if (clearCacheNode != null) {
-                Log.d(Constants.TAG_SERVICE, "Clear Cache ditemukan: '${clearCacheNode.text}'")
-
-                if (clearCacheNode.isEnabled) {
-                    clearCacheNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    clearCacheNode.recycle()
-                    root.recycle()
-
-                    mainHandler.postDelayed({
-                        transitionTo(CleanPhase.CONFIRMING)
-                    }, Constants.NAVIGATION_DELAY_MS)
-                } else {
-                    // Cache sudah kosong
-                    clearCacheNode.recycle()
-                    root.recycle()
-                    Log.d(Constants.TAG_SERVICE, "Cache sudah kosong (button disabled)")
-                    completeSession()
-                }
-            } else {
-                root.recycle()
-                clearCacheRetryCount++
-                Log.w(Constants.TAG_SERVICE, "Clear Cache tidak ditemukan — retry $clearCacheRetryCount/$maxClearCacheRetries")
-
-                if (clearCacheRetryCount >= maxClearCacheRetries) {
-                    // Sprint 4: Fail-fast setelah 3x retry (tidak tunggu timeout 5 detik)
-                    abortSession("UI structure not recognized after $maxClearCacheRetries retries")
-                } else {
-                    // Retry setelah 1 detik
-                    mainHandler.postDelayed({
-                        if (CleanSessionManager.isActive) tryClickClearCache()
-                    }, 1_000L)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(Constants.TAG_SERVICE, "Error di fase Clear Cache: ${e.message}")
-            abortSession("Exception di fase Clear Cache: ${e.javaClass.simpleName}")
-        }
-    }
-
-    // ===================================================
-    // Phase 3: Konfirmasi dialog (jika ada)
-    // ===================================================
-
-    @Suppress("DEPRECATION")
-    private fun tryConfirmDialog() {
-        try {
-            val root = rootInActiveWindow ?: run {
-                // Tidak ada dialog konfirmasi — berarti sudah clear
-                completeSession()
-                return
-            }
-
-            val confirmNode = findNodeByLabels(root, Constants.CONFIRM_LABELS)
-            if (confirmNode != null) {
-                Log.d(Constants.TAG_SERVICE, "Dialog konfirmasi: '${confirmNode.text}'")
-                confirmNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                confirmNode.recycle()
-                root.recycle()
-
-                mainHandler.postDelayed({ completeSession() }, Constants.NAVIGATION_DELAY_MS)
-            } else {
-                root.recycle()
-                // Tidak ada dialog → clear langsung berhasil
-                completeSession()
-            }
-        } catch (e: Exception) {
-            Log.e(Constants.TAG_SERVICE, "Error di fase Konfirmasi: ${e.message}")
-            // Anggap berhasil jika exception terjadi di fase konfirmasi
-            // (kemungkinan dialog sudah dismiss otomatis)
-            completeSession()
-        }
-    }
-
-    // ===================================================
-    // Helper: Cari node berdasarkan list label (multi-OEM)
-    // ===================================================
-
-    @Suppress("DEPRECATION")
-    private fun findNodeByLabels(
-        root: AccessibilityNodeInfo,
-        labels: List<String>
-    ): AccessibilityNodeInfo? {
-        return try {
-            for (label in labels) {
-                val nodes = root.findAccessibilityNodeInfosByText(label)
-                if (!nodes.isNullOrEmpty()) return nodes.first()
-            }
-            null
-        } catch (e: Exception) {
-            Log.e(Constants.TAG_SERVICE, "Error saat mencari node: ${e.message}")
-            null
-        }
-    }
-
-    // ===================================================
-    // State Machine Transitions & Session Management
-    // ===================================================
-
-    private fun transitionTo(phase: CleanPhase) {
-        currentPhase = phase
-        Log.d(Constants.TAG_SERVICE, "→ Transisi ke fase: $phase")
-        cancelTimeout()
-
-        if (phase != CleanPhase.IDLE && phase != CleanPhase.DONE) {
-            timeoutRunnable = Runnable {
-                Log.w(Constants.TAG_SERVICE, "TIMEOUT di fase $phase")
-                abortSession("Timeout di fase $phase")
-            }.also { mainHandler.postDelayed(it, Constants.PHASE_TIMEOUT_MS) }
-        }
-    }
-
-    private fun completeSession() {
-        val target = CleanSessionManager.targetPackageName ?: "unknown"
-        cancelTimeout()
-        currentPhase = CleanPhase.DONE
-        CleanSessionManager.endSession()
+    private fun startNavigationCoroutine() {
+        isProcessingEvent = true
 
         serviceScope.launch {
-            ServiceEventBus.emitEvent(CleanerEvent.Success(target))
-        }
+            val targetPackage = CleanSessionManager.targetPackageName ?: run {
+                isProcessingEvent = false
+                return@launch
+            }
 
-        Log.d(Constants.TAG_SERVICE, "✅ Sesi selesai: $target")
-        currentPhase = CleanPhase.IDLE
+            Log.d(Constants.TAG_SERVICE, "Memulai navigasi untuk: $targetPackage")
+
+            // Hard timeout 15 detik per app (ai_task.md §3.2)
+            val result = withTimeoutOrNull(15_000L) {
+                navigateAndClearCache(targetPackage)
+            }
+
+            if (result == null) {
+                // withTimeoutOrNull mengembalikan null → timeout tercapai
+                Log.w(Constants.TAG_SERVICE, "TIMEOUT 15s untuk $targetPackage")
+                emitAndProcessNext(targetPackage, success = false, reason = "Hard timeout 15s")
+            }
+
+            isProcessingEvent = false
+        }
     }
 
-    private fun abortSession(reason: String) {
-        val target = CleanSessionManager.targetPackageName ?: "unknown"
-        cancelTimeout()
-        currentPhase = CleanPhase.IDLE
-        clearCacheRetryCount = 0
-        CleanSessionManager.endSession()
+    /**
+     * Alur navigasi utama V2 dengan pacing 4 detik setiap fase kritis.
+     * Sesuai ai_task.md §3.4 (Fase 1 → 2 → 3 → 4).
+     *
+     * @return true jika berhasil, false jika gagal di salah satu fase
+     */
+    private suspend fun navigateAndClearCache(targetPackage: String): Boolean {
 
+        // === FASE 1: Cari menu Storage ===
+        Log.d(Constants.TAG_SERVICE, "Fase 1: Mencari menu Storage...")
+        val storageNode = findNodeWithRetry(AccessibilityNodeHelper.STORAGE_KEYWORDS)
+
+        if (storageNode == null) {
+            Log.w(Constants.TAG_SERVICE, "Fase 1 GAGAL: menu Storage tidak ditemukan")
+            emitAndProcessNext(targetPackage, success = false, reason = "Storage menu not found")
+            return false
+        }
+
+        Log.d(Constants.TAG_SERVICE, "Fase 1 OK: '${storageNode.text}' ditemukan — klik")
+        AccessibilityNodeHelper.safeClick(storageNode)
+        @Suppress("DEPRECATION") storageNode.recycle()
+
+        // ⏱️ PACING 4 DETIK — anti-bot Android (ai_task.md §3.2)
+        Log.d(Constants.TAG_SERVICE, "Pacing 4s setelah klik Storage...")
+        delay(Constants.PACING_DELAY_MS)
+
+        // === FASE 2: Cari tombol Clear Cache ===
+        Log.d(Constants.TAG_SERVICE, "Fase 2: Mencari tombol Clear Cache/Hapus Cache...")
+        val clearNode = findNodeWithRetry(AccessibilityNodeHelper.CLEAR_CACHE_KEYWORDS)
+
+        if (clearNode == null) {
+            Log.w(Constants.TAG_SERVICE, "Fase 2 GAGAL: tombol hapus cache tidak ditemukan")
+            emitAndProcessNext(targetPackage, success = false, reason = "UI structure not recognized")
+            return false
+        }
+
+        if (!clearNode.isEnabled) {
+            Log.d(Constants.TAG_SERVICE, "Cache sudah kosong (button disabled)")
+            @Suppress("DEPRECATION") clearNode.recycle()
+            emitAndProcessNext(targetPackage, success = true, reason = null)
+            return true
+        }
+
+        Log.d(Constants.TAG_SERVICE, "Fase 2 OK: '${clearNode.text}' ditemukan — klik")
+        AccessibilityNodeHelper.safeClick(clearNode)
+        @Suppress("DEPRECATION") clearNode.recycle()
+
+        // ⏱️ PACING 4 DETIK
+        Log.d(Constants.TAG_SERVICE, "Pacing 4s setelah klik Clear Cache...")
+        delay(Constants.PACING_DELAY_MS)
+
+        // === FASE 3: Konfirmasi dialog (jika ada) ===
+        Log.d(Constants.TAG_SERVICE, "Fase 3: Memeriksa dialog konfirmasi...")
+        val root = rootInActiveWindow
+        if (root != null) {
+            var confirmNode = AccessibilityNodeHelper.findNodeByPartialText(
+                root, AccessibilityNodeHelper.CONFIRM_KEYWORDS
+            )
+
+            // Fallback heuristik jika teks tidak cocok
+            if (confirmNode == null) {
+                confirmNode = AccessibilityNodeHelper.findConfirmButtonFallback(root)
+                if (confirmNode != null) {
+                    Log.d(Constants.TAG_SERVICE, "Fase 3 (fallback heuristic): tombol konfirmasi ditemukan")
+                }
+            }
+
+            if (confirmNode != null) {
+                AccessibilityNodeHelper.safeClick(confirmNode)
+                @Suppress("DEPRECATION") confirmNode.recycle()
+                Log.d(Constants.TAG_SERVICE, "Fase 3 OK: konfirmasi diklik")
+            } else {
+                Log.d(Constants.TAG_SERVICE, "Fase 3: tidak ada dialog konfirmasi — lanjut")
+            }
+            @Suppress("DEPRECATION") root.recycle()
+        }
+
+        // ⏱️ PACING 4 DETIK setelah konfirmasi
+        Log.d(Constants.TAG_SERVICE, "Pacing 4s setelah konfirmasi...")
+        delay(Constants.PACING_DELAY_MS)
+
+        // === FASE 4: Selesai ===
+        emitAndProcessNext(targetPackage, success = true, reason = null)
+        return true
+    }
+
+    // ===================================================
+    // Helper: Cari node dengan retry ringan (tanpa blokir terlalu lama)
+    // ===================================================
+
+    private suspend fun findNodeWithRetry(
+        keywords: List<String>,
+        maxRetries: Int = 3,
+        retryDelayMs: Long = 800L
+    ): android.view.accessibility.AccessibilityNodeInfo? {
+        repeat(maxRetries) { attempt ->
+            val root = rootInActiveWindow
+            if (root != null) {
+                val node = AccessibilityNodeHelper.findNodeByPartialText(root, keywords)
+                @Suppress("DEPRECATION") root.recycle()
+                if (node != null) return node
+            }
+            if (attempt < maxRetries - 1) {
+                Log.d(Constants.TAG_SERVICE, "Node tidak ditemukan, retry ${attempt + 1}/$maxRetries...")
+                delay(retryDelayMs)
+            }
+        }
+        return null
+    }
+
+    // ===================================================
+    // Session Completion & Batch Queue
+    // ===================================================
+
+    /**
+     * Menyelesaikan app saat ini dan memproses app berikutnya dalam antrian.
+     */
+    private fun emitAndProcessNext(
+        packageName: String,
+        success: Boolean,
+        reason: String?
+    ) {
+        serviceScope.launch {
+            if (success) {
+                ServiceEventBus.emitEvent(CleanerEvent.Success(packageName))
+                Log.d(Constants.TAG_SERVICE, "✅ Berhasil: $packageName")
+            } else {
+                ServiceEventBus.emitEvent(
+                    CleanerEvent.Failed(packageName, reason ?: "Unknown error")
+                )
+                Log.e(Constants.TAG_SERVICE, "❌ Gagal: $packageName — $reason")
+            }
+
+            // Cek antrian berikutnya
+            val nextPackage = CleanSessionManager.moveToNext()
+            if (nextPackage != null) {
+                // Emit progress update untuk overlay
+                ServiceEventBus.emitEvent(
+                    CleanerEvent.ProgressUpdate(
+                        currentIndex = CleanSessionManager.currentIndex,
+                        totalApps = CleanSessionManager.totalApps,
+                        currentAppName = nextPackage
+                    )
+                )
+
+                // Buka halaman app berikutnya di Settings
+                Log.d(Constants.TAG_SERVICE, "Pindah ke app berikutnya: $nextPackage")
+                delay(1_000L) // jeda singkat antar-app
+
+                val intent = Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$nextPackage")
+                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                applicationContext.startActivity(intent)
+
+            } else {
+                // Semua app selesai
+                CleanSessionManager.endSession()
+                ServiceEventBus.emitEvent(CleanerEvent.AllCompleted)
+                Log.d(Constants.TAG_SERVICE, "🏁 Semua app dalam antrian selesai")
+            }
+        }
+    }
+
+    private fun abortCurrentSession(reason: String) {
+        val target = CleanSessionManager.targetPackageName ?: "unknown"
+        CleanSessionManager.endSession()
         serviceScope.launch {
             ServiceEventBus.emitEvent(CleanerEvent.Failed(target, reason))
         }
-
-        Log.e(Constants.TAG_SERVICE, "❌ Sesi dibatalkan: $reason")
-    }
-
-    private fun cancelTimeout() {
-        timeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-        timeoutRunnable = null
     }
 }
