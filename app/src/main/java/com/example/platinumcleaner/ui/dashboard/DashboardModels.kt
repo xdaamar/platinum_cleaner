@@ -23,7 +23,8 @@ data class StorageMetricState(
     val isCleaned: Boolean = false,
     val isCleaning: Boolean = false,
     val cleaningTarget: String? = null,
-    val cleaningError: String? = null
+    val cleaningError: String? = null,
+    val snackbarMessage: String? = null
 )
 
 enum class DashboardNavTab(

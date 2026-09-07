@@ -13,6 +13,7 @@ import com.example.platinumcleaner.service.CleanerEvent
 import com.example.platinumcleaner.service.CleanSessionManager
 import com.example.platinumcleaner.service.ServiceEventBus
 import com.example.platinumcleaner.util.PermissionHelper
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,18 +22,15 @@ import kotlinx.coroutines.launch
 /**
  * ViewModel untuk DashboardScreen.
  *
- * Sprint 3 Enhancement:
- * - Collect ServiceEventBus untuk menerima event dari AccessibilityService
- * - initiateCleanForApp() untuk memulai sesi auto-clean
- *
- * Sesuai MVVM: ViewModel memegang dan mengelola state UI.
- * Sesuai 04_performance_budget.md: Tidak ada operasi I/O di Main Thread.
+ * Sprint 4 Hardening:
+ * - Guard double-execution di initiateCleanForApp()
+ * - Snackbar manusiawi untuk error & sukses
+ * - refreshData() untuk dipanggil dari ON_RESUME lifecycle observer
  */
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = AppCleanerRepository(application)
 
-    // === Exposed State Flows ===
     private val _appsState = MutableStateFlow<UiState<List<AppInfo>>>(UiState.Loading)
     val appsState: StateFlow<UiState<List<AppInfo>>> = _appsState.asStateFlow()
 
@@ -53,34 +51,43 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun loadData() {
         val context = getApplication<Application>()
-
         if (!PermissionHelper.hasUsageStatsPermission(context)) {
             Log.d(Constants.TAG_VIEWMODEL, "Usage Access belum diberikan")
             _needsPermission.value = true
             _appsState.value = UiState.PermissionRequired
             return
         }
-
         _needsPermission.value = false
         fetchAppsWithCache()
+    }
+
+    /**
+     * Dipanggil saat app kembali ke foreground (ON_RESUME dari DashboardScreen).
+     * Hanya fetch ulang jika tidak sedang ada sesi cleaning aktif.
+     */
+    fun refreshData() {
+        if (CleanSessionManager.isActive) {
+            Log.d(Constants.TAG_VIEWMODEL, "refreshData() diabaikan — sesi cleaning masih aktif")
+            return
+        }
+        loadData()
     }
 
     private fun fetchAppsWithCache() {
         viewModelScope.launch {
             repository.getInstalledAppsWithCache().collect { state ->
                 _appsState.value = state
-
                 if (state is UiState.Success) {
                     val apps = state.data
                     _metricState.value = _metricState.value.copy(
                         reclaimableAmount = repository.calculateTotalCacheFormatted(apps),
                         sweepProgress = repository.calculateGaugeProgress(apps),
                         isPurging = false,
-                        isCleaned = false
+                        isCleaned = false,
+                        isCleaning = false,
+                        cleaningTarget = null
                     )
-                    Log.d(Constants.TAG_VIEWMODEL, "Berhasil load ${apps.size} apps")
                 }
-
                 if (state is UiState.PermissionRequired) {
                     _needsPermission.value = true
                 }
@@ -89,10 +96,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // ===================================================
-    // Sprint 3: ServiceEventBus Observer
-    //
-    // Menggunakan viewModelScope sehingga otomatis cancelled
-    // saat ViewModel di-clear — TIDAK ada memory leak.
+    // ServiceEventBus Observer (no memory leak — viewModelScope)
     // ===================================================
 
     private fun observeServiceEvents() {
@@ -110,97 +114,102 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 _metricState.value = _metricState.value.copy(
                     isCleaning = true,
                     cleaningTarget = event.packageName,
-                    cleaningError = null
+                    cleaningError = null,
+                    snackbarMessage = null
                 )
             }
 
             is CleanerEvent.Success -> {
-                Log.d(Constants.TAG_VIEWMODEL, "✅ Berhasil membersihkan: ${event.packageName}")
+                Log.d(Constants.TAG_VIEWMODEL, "✅ Berhasil: ${event.packageName}")
                 _metricState.value = _metricState.value.copy(
                     isCleaning = false,
                     cleaningTarget = null,
                     isPurging = false,
                     isCleaned = true,
                     reclaimableAmount = "0.0",
-                    sweepProgress = 0f
+                    sweepProgress = 0f,
+                    snackbarMessage = "Cache berhasil dibersihkan ✓"
                 )
-                // Reload data setelah cache dibersihkan untuk angka terbaru
+                // Reload data segar setelah 1 detik
                 viewModelScope.launch {
-                    kotlinx.coroutines.delay(800)
+                    delay(1_000)
                     loadData()
                 }
             }
 
             is CleanerEvent.Failed -> {
-                Log.e(Constants.TAG_VIEWMODEL, "❌ Gagal membersihkan ${event.packageName}: ${event.reason}")
+                Log.e(Constants.TAG_VIEWMODEL, "❌ Gagal: ${event.reason}")
+                // Terjemahkan reason teknis menjadi pesan manusiawi
+                val humanMessage = when {
+                    event.reason.contains("cancelled", ignoreCase = true) ->
+                        "Pembersihan dibatalkan."
+                    event.reason.contains("not recognized", ignoreCase = true) ->
+                        "Tidak dapat menemukan tombol hapus cache. Silakan hapus manual di Pengaturan."
+                    event.reason.contains("Interrupted", ignoreCase = true) ->
+                        "Proses terganggu oleh sistem. Silakan coba lagi."
+                    event.reason.contains("Timeout", ignoreCase = true) ->
+                        "Navigasi terlalu lambat. Pastikan Accessibility Service aktif, lalu coba lagi."
+                    else ->
+                        "Pembersihan gagal. Silakan hapus cache secara manual."
+                }
                 _metricState.value = _metricState.value.copy(
                     isCleaning = false,
                     cleaningTarget = null,
                     isPurging = false,
-                    cleaningError = event.reason
+                    cleaningError = event.reason,
+                    snackbarMessage = humanMessage
                 )
             }
         }
     }
 
     // ===================================================
-    // Sprint 3: Auto-Clean Trigger
+    // Auto-Clean Trigger
     // ===================================================
 
     /**
-     * Memulai sesi auto-clean untuk satu aplikasi.
-     *
-     * Alur:
-     * 1. Set CleanSessionManager dengan target package
-     * 2. Emit CleanerEvent.Started ke ServiceEventBus
-     * 3. Update UI state ke Cleaning
-     * 4. Launch Intent ke halaman detail app di Settings
-     *    → AccessibilityService akan menangkap dan mengendalikan navigasi selanjutnya
-     *
-     * @param packageName Package name dari app yang akan dibersihkan cache-nya.
+     * Sprint 4: Guard double-execution.
+     * Jika CleanSessionManager.isActive → skip, jangan buka Settings dua kali.
      */
     fun initiateCleanForApp(packageName: String) {
         val context = getApplication<Application>()
 
-        // Tandai sesi aktif — service hanya akan bekerja setelah ini
-        CleanSessionManager.startSession(packageName)
+        // GUARD: Tolak jika sesi sebelumnya masih aktif
+        val sessionStarted = CleanSessionManager.startSession(packageName)
+        if (!sessionStarted) {
+            Log.w(Constants.TAG_VIEWMODEL, "Sesi masih aktif — request diabaikan (anti-spam)")
+            return
+        }
 
         _metricState.value = _metricState.value.copy(
             isPurging = true,
             isCleaning = true,
             cleaningTarget = packageName,
-            cleaningError = null
+            cleaningError = null,
+            snackbarMessage = null
         )
 
-        // Emit Started event
         viewModelScope.launch {
             ServiceEventBus.emitEvent(CleanerEvent.Started(packageName))
         }
 
-        // Buka halaman detail app di Settings — ini memicu AccessibilityService
         val intent = Intent(
             Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
             Uri.parse("package:$packageName")
-        ).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         context.startActivity(intent)
 
         Log.d(Constants.TAG_VIEWMODEL, "Membuka Settings untuk: $packageName")
     }
 
-    /**
-     * Trigger clean untuk app dengan cache terbesar (aksi tombol utama "Clean Now").
-     */
     fun triggerCleanLargest() {
         val state = _appsState.value
         if (state is UiState.Success && state.data.isNotEmpty()) {
             initiateCleanForApp(state.data.first().packageName)
         } else {
-            // Fallback: simulasi purge jika tidak ada data nyata
             viewModelScope.launch {
                 _metricState.value = _metricState.value.copy(isPurging = true)
-                kotlinx.coroutines.delay(1400)
+                delay(1_400)
                 _metricState.value = _metricState.value.copy(
                     isPurging = false,
                     isCleaned = true,
@@ -209,6 +218,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 )
             }
         }
+    }
+
+    /** Hapus snackbar message setelah ditampilkan (one-shot). */
+    fun onSnackbarShown() {
+        _metricState.value = _metricState.value.copy(snackbarMessage = null)
     }
 
     fun resetAndReload() {

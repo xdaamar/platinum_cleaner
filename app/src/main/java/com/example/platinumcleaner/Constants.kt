@@ -9,6 +9,9 @@ object Constants {
     // HUKUM BESI: Service HANYA boleh berinteraksi dengan package ini (03_security_protocols.md)
     const val SETTINGS_PACKAGE = "com.android.settings"
 
+    // Package kita sendiri — digunakan untuk mendeteksi user menekan Back dari Settings
+    const val OUR_PACKAGE_NAME = "com.example.platinumcleaner"
+
     // === LOGGING TAGS ===
     const val TAG_SERVICE = "PlatinumCleanerService"
     const val TAG_REPO = "AppCleanerRepository"

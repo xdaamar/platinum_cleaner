@@ -12,10 +12,9 @@ import com.example.platinumcleaner.Constants
  * memastikan service HANYA bekerja saat ada sesi yang secara eksplisit dipicu
  * oleh user melalui tombol di UI.
  *
- * ALUR:
- * 1. User tap "Clean" di UI → DashboardViewModel memanggil startSession()
- * 2. PlatinumCleanerService memeriksa isActive sebelum setiap tindakan
- * 3. Saat berhasil/gagal/timeout → endSession() dipanggil → service kembali idle
+ * Sprint 4 Enhancement:
+ * - Guard double-execution: startSession() menolak request baru jika sesi masih aktif.
+ *   Mencegah race condition jika user spam tombol "Clean".
  *
  * Sesuai 03_security_protocols.md: Mencegah eksekusi liar dari service.
  */
@@ -34,11 +33,20 @@ object CleanSessionManager {
     /**
      * Mulai sesi baru. Hanya boleh dipanggil dari DashboardViewModel saat user
      * secara eksplisit menekan tombol clean.
+     *
+     * @return true jika sesi berhasil dimulai, false jika sesi sebelumnya masih aktif (double-execution guard).
      */
-    fun startSession(packageName: String) {
+    fun startSession(packageName: String): Boolean {
+        // GUARD: Tolak request baru jika sesi sebelumnya masih berjalan.
+        // Mencegah race condition / spam click pada tombol Clean.
+        if (isActive) {
+            Log.w(Constants.TAG_SESSION, "Sesi masih aktif untuk $targetPackageName — request baru diabaikan")
+            return false
+        }
         targetPackageName = packageName
         isActive = true
         Log.d(Constants.TAG_SESSION, "Sesi dimulai untuk: $packageName")
+        return true
     }
 
     /**
