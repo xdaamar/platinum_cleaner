@@ -1,16 +1,20 @@
 package com.example.platinumcleaner.ui.dashboard
 
 import android.content.Intent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,32 +26,33 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
@@ -61,10 +66,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.platinumcleaner.Constants
 import com.example.platinumcleaner.R
 import com.example.platinumcleaner.ui.theme.Dimens
-import com.example.platinumcleaner.ui.theme.PlatinumAccent
 import com.example.platinumcleaner.ui.theme.PlatinumBackground
 import com.example.platinumcleaner.ui.theme.PlatinumOnPrimary
-import com.example.platinumcleaner.ui.theme.PlatinumOnPrimaryContainer
 import com.example.platinumcleaner.ui.theme.PlatinumOnSurface
 import com.example.platinumcleaner.ui.theme.PlatinumOnSurfaceVariant
 import com.example.platinumcleaner.ui.theme.PlatinumOutlineVariant
@@ -75,8 +78,9 @@ import com.example.platinumcleaner.ui.theme.PlatinumSurfaceContainerHigh
 import com.example.platinumcleaner.ui.theme.PlatinumSurfaceContainerLow
 import com.example.platinumcleaner.ui.theme.PlatinumSurfaceContainerLowest
 import com.example.platinumcleaner.util.PermissionHelper
+import kotlinx.coroutines.launch
 
-// Import components from DashboardComponents
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     modifier: Modifier = Modifier,
@@ -88,9 +92,43 @@ fun DashboardScreen(
     val metricState by viewModel.metricState.collectAsState()
     val needsPermission by viewModel.needsPermission.collectAsState()
 
-    // Reload data saat layar kembali fokus (e.g., setelah user kembali dari Settings)
+    // Bottom Sheet state
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    var showPermissionSheet by remember { mutableStateOf(false) }
+
+    // Tampilkan bottom sheet saat permission dibutuhkan
+    LaunchedEffect(needsPermission) {
+        if (needsPermission) showPermissionSheet = true
+    }
+
+    // Reload saat kembali ke layar (setelah user grant permission di Settings)
     LaunchedEffect(Unit) {
         viewModel.loadData()
+    }
+
+    // Permission Bottom Sheet — Quiet Luxury
+    if (showPermissionSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showPermissionSheet = false },
+            sheetState = sheetState,
+            containerColor = PlatinumSurface,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        ) {
+            PermissionBottomSheetContent(
+                onEnableClick = {
+                    scope.launch { sheetState.hide() }.invokeOnCompletion {
+                        showPermissionSheet = false
+                    }
+                    context.startActivity(PermissionHelper.buildUsageAccessIntent())
+                },
+                onDismiss = {
+                    scope.launch { sheetState.hide() }.invokeOnCompletion {
+                        showPermissionSheet = false
+                    }
+                }
+            )
+        }
     }
 
     Scaffold(
@@ -119,50 +157,50 @@ fun DashboardScreen(
         ) {
             item { GreetingSection() }
 
-            // Permission Onboarding Banner (jika Usage Access belum diberikan)
-            if (needsPermission) {
-                item {
-                    PermissionBanner(
-                        onEnableClick = {
-                            context.startActivity(PermissionHelper.buildUsageAccessIntent())
-                        }
-                    )
-                }
-            }
-
             item { HeroStorageCard(state = metricState) }
 
             item {
                 PrimaryActionButton(
                     state = metricState,
-                    onClick = { viewModel.triggerClean() }
+                    onClick = { viewModel.triggerCleanLargest() }
                 )
             }
 
-            // Dynamic app list from real data
-            when (val state = appsState) {
-                is UiState.Loading -> {
-                    item { LoadingShimmer() }
+            // Cleaning Overlay Banner
+            if (metricState.isCleaning) {
+                item {
+                    CleaningStatusBanner(targetPackage = metricState.cleaningTarget)
                 }
+            }
+
+            // Error Banner
+            if (metricState.cleaningError != null && !metricState.isCleaning) {
+                item {
+                    CleaningErrorBanner(
+                        onRetry = { viewModel.triggerCleanLargest() }
+                    )
+                }
+            }
+
+            // App list from real data
+            when (val state = appsState) {
+                is UiState.Loading -> item { LoadingShimmer() }
                 is UiState.Success -> {
                     val topApps = state.data.take(Constants.MAX_DASHBOARD_APP_ITEMS)
                     if (topApps.isNotEmpty()) {
                         item {
                             RealAppListSection(
                                 apps = topApps,
-                                totalCount = state.data.size
+                                totalCount = state.data.size,
+                                onCleanApp = { viewModel.initiateCleanForApp(it) }
                             )
                         }
                     }
                     item { InsightCard() }
                 }
-                is UiState.PermissionRequired -> {
-                    item { InsightCard() }
-                }
+                is UiState.PermissionRequired -> item { InsightCard() }
                 is UiState.Error -> {
-                    item {
-                        ErrorCard(message = state.message)
-                    }
+                    item { ErrorCard(message = state.message) }
                     item { InsightCard() }
                 }
             }
@@ -172,15 +210,294 @@ fun DashboardScreen(
     }
 }
 
+// ===================================================
+// Permission Bottom Sheet — Quiet Luxury Design
+// ===================================================
+
 @Composable
-fun PermissionBanner(
+fun PermissionBottomSheetContent(
     onEnableClick: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isTutorialExpanded by remember { mutableStateOf(false) }
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (isTutorialExpanded) 90f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "arrow_rotation"
+    )
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 28.dp)
+            .padding(bottom = 32.dp)
+            .navigationBarsPadding()
+    ) {
+        // Handle bar
+        Box(
+            modifier = Modifier
+                .width(40.dp)
+                .height(4.dp)
+                .clip(CircleShape)
+                .background(PlatinumOutlineVariant)
+                .align(Alignment.CenterHorizontally)
+        )
+
+        Spacer(modifier = Modifier.height(28.dp))
+
+        // Header
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingMD)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(PlatinumPrimary.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_shield_check),
+                    contentDescription = null,
+                    tint = PlatinumPrimary,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+
+            Column {
+                Text(
+                    text = stringResource(R.string.permission_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = PlatinumOnSurface,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = stringResource(R.string.permission_badge),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = PlatinumOnSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(Dimens.SpacingXL))
+
+        // Description
+        Text(
+            text = stringResource(R.string.permission_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = PlatinumOnSurfaceVariant,
+            lineHeight = 22.sp
+        )
+
+        Spacer(modifier = Modifier.height(Dimens.SpacingXL))
+
+        // Expandable Tutorial
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(Dimens.RadiusMD),
+            color = PlatinumSurfaceContainerLow
+        ) {
+            Column {
+                // Expandable header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { isTutorialExpanded = !isTutorialExpanded }
+                        .padding(Dimens.SpacingMD),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Lihat Panduan Lengkap",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = PlatinumOnSurface,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Icon(
+                        painter = painterResource(R.drawable.ic_arrow_forward),
+                        contentDescription = null,
+                        tint = PlatinumOnSurfaceVariant,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .rotate(arrowRotation)
+                    )
+                }
+
+                // Tutorial Steps — AnimatedVisibility (60fps GPU-friendly per 01_design_rules.md)
+                AnimatedVisibility(
+                    visible = isTutorialExpanded,
+                    enter = expandVertically(animationSpec = tween(300)) + fadeIn(animationSpec = tween(300)),
+                    exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(animationSpec = tween(300))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(
+                            start = Dimens.SpacingMD,
+                            end = Dimens.SpacingMD,
+                            bottom = Dimens.SpacingMD
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(Dimens.SpacingMD)
+                    ) {
+                        TutorialStep(
+                            step = 1,
+                            text = "Ketuk tombol di bawah untuk membuka Pengaturan."
+                        )
+                        TutorialStep(
+                            step = 2,
+                            text = "Cari dan pilih 'Platinum Cleaner' di daftar aplikasi."
+                        )
+                        TutorialStep(
+                            step = 3,
+                            text = "Aktifkan toggle 'Izinkan akses data penggunaan'."
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(Dimens.SpacingXL))
+
+        // Primary Action Button
+        Button(
+            onClick = onEnableClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(Dimens.RadiusMD),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = PlatinumPrimary,
+                contentColor = PlatinumOnPrimary
+            )
+        ) {
+            Text(
+                text = stringResource(R.string.permission_button),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(Dimens.SpacingSM))
+
+        // Secondary: Nanti saja
+        TextButton(
+            onClick = onDismiss,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Nanti saja",
+                style = MaterialTheme.typography.labelLarge,
+                color = PlatinumOnSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun TutorialStep(step: Int, text: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingMD),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(PlatinumPrimary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = step.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = PlatinumPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp
+            )
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = PlatinumOnSurfaceVariant,
+            lineHeight = 18.sp,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
+// ===================================================
+// Cleaning Status Banner
+// ===================================================
+
+@Composable
+fun CleaningStatusBanner(
+    targetPackage: String?,
     modifier: Modifier = Modifier
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(Dimens.RadiusLG),
-        color = PlatinumPrimary
+        shape = RoundedCornerShape(Dimens.RadiusMD),
+        color = PlatinumSurfaceContainer
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(Dimens.SpacingMD),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingMD)
+        ) {
+            // Pulse dot indicator
+            val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+            val alpha by infiniteTransition.animateFloat(
+                initialValue = 0.3f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(800),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulse_alpha"
+            )
+
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(PlatinumPrimary.copy(alpha = alpha))
+            )
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Membersihkan cache...",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = PlatinumOnSurface,
+                    fontWeight = FontWeight.Medium
+                )
+                if (targetPackage != null) {
+                    Text(
+                        text = targetPackage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PlatinumOnSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ===================================================
+// Cleaning Error Banner
+// ===================================================
+
+@Composable
+fun CleaningErrorBanner(
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(Dimens.RadiusMD),
+        color = PlatinumSurfaceContainerLow
     ) {
         Row(
             modifier = Modifier
@@ -189,58 +506,38 @@ fun PermissionBanner(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(Dimens.RadiusXS))
-                            .background(PlatinumOnPrimaryContainer.copy(alpha = 0.2f))
-                            .padding(horizontal = Dimens.SpacingXS, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.permission_badge),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = PlatinumOnPrimary.copy(alpha = 0.8f),
-                            fontSize = 9.sp
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(Dimens.SpacingXXS))
-                Text(
-                    text = stringResource(R.string.permission_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = PlatinumOnPrimary,
-                    fontWeight = FontWeight.SemiBold
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingSM),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_shield_check),
+                    contentDescription = null,
+                    tint = PlatinumOnSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
                 )
-                Spacer(modifier = Modifier.height(Dimens.SpacingXXS))
                 Text(
-                    text = stringResource(R.string.permission_body),
+                    text = "Tidak dapat menemukan tombol Clear Cache",
                     style = MaterialTheme.typography.bodySmall,
-                    color = PlatinumOnPrimary.copy(alpha = 0.75f),
-                    lineHeight = 17.sp
+                    color = PlatinumOnSurfaceVariant,
+                    maxLines = 2
                 )
             }
-            Spacer(modifier = Modifier.width(Dimens.SpacingMD))
-            Button(
-                onClick = onEnableClick,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = PlatinumSurface,
-                    contentColor = PlatinumPrimary
-                ),
-                shape = RoundedCornerShape(Dimens.RadiusMD)
-            ) {
+            TextButton(onClick = onRetry) {
                 Text(
-                    text = stringResource(R.string.permission_button),
+                    text = "Coba lagi",
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
+                    color = PlatinumPrimary
                 )
             }
         }
     }
 }
+
+// ===================================================
+// Shimmer Loading
+// ===================================================
 
 @Composable
 fun LoadingShimmer(modifier: Modifier = Modifier) {
@@ -249,7 +546,6 @@ fun LoadingShimmer(modifier: Modifier = Modifier) {
         PlatinumSurfaceContainer,
         PlatinumSurfaceContainerHigh
     )
-
     val transition = rememberInfiniteTransition(label = "shimmer")
     val translateAnim by transition.animateFloat(
         initialValue = 0f,
@@ -260,7 +556,6 @@ fun LoadingShimmer(modifier: Modifier = Modifier) {
         ),
         label = "shimmer_translate"
     )
-
     val brush = Brush.linearGradient(
         colors = shimmerColors,
         start = Offset(translateAnim - 400f, 0f),
@@ -276,45 +571,29 @@ fun LoadingShimmer(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .height(18.dp)
-                    .width(120.dp)
-                    .clip(RoundedCornerShape(Dimens.RadiusSM))
-                    .background(brush)
-            )
-            Box(
-                modifier = Modifier
-                    .height(14.dp)
-                    .width(80.dp)
-                    .clip(RoundedCornerShape(Dimens.RadiusSM))
-                    .background(brush)
-            )
+            Box(modifier = Modifier.height(18.dp).width(120.dp).clip(RoundedCornerShape(Dimens.RadiusSM)).background(brush))
+            Box(modifier = Modifier.height(14.dp).width(80.dp).clip(RoundedCornerShape(Dimens.RadiusSM)).background(brush))
         }
-
         repeat(3) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(72.dp)
-                    .clip(RoundedCornerShape(Dimens.RadiusMD))
-                    .background(brush)
-            )
+            Box(modifier = Modifier.fillMaxWidth().height(72.dp).clip(RoundedCornerShape(Dimens.RadiusMD)).background(brush))
         }
     }
 }
+
+// ===================================================
+// Real App List Section
+// ===================================================
 
 @Composable
 fun RealAppListSection(
     apps: List<AppInfo>,
     totalCount: Int,
+    onCleanApp: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = Dimens.SpacingXS),
+            modifier = Modifier.fillMaxWidth().padding(bottom = Dimens.SpacingXS),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -332,12 +611,11 @@ fun RealAppListSection(
                 )
             }
         }
-
         Column(verticalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)) {
-            apps.forEachIndexed { index, app ->
+            apps.forEachIndexed { _, app ->
                 RealAppCacheRowItem(
                     app = app,
-                    isPrimary = index == 0
+                    onClean = { onCleanApp(app.packageName) }
                 )
             }
         }
@@ -347,7 +625,7 @@ fun RealAppListSection(
 @Composable
 fun RealAppCacheRowItem(
     app: AppInfo,
-    isPrimary: Boolean = false,
+    onClean: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -357,9 +635,7 @@ fun RealAppCacheRowItem(
         shadowElevation = Dimens.ElevationSoft
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(Dimens.SpacingMD),
+            modifier = Modifier.fillMaxWidth().padding(Dimens.SpacingMD),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -368,7 +644,7 @@ fun RealAppCacheRowItem(
                 horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingMD),
                 modifier = Modifier.weight(1f)
             ) {
-                // App icon placeholder — monogram dari huruf pertama nama app
+                // Monogram icon
                 Box(
                     modifier = Modifier
                         .size(44.dp)
@@ -393,41 +669,23 @@ fun RealAppCacheRowItem(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = app.packageName,
+                        text = app.cacheSizeFormatted,
                         style = MaterialTheme.typography.bodySmall,
-                        color = PlatinumOnSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        color = PlatinumOnSurfaceVariant
                     )
                 }
             }
 
             Spacer(modifier = Modifier.width(Dimens.SpacingSM))
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)
+            // Clean button per app
+            TextButton(
+                onClick = onClean,
+                colors = ButtonDefaults.textButtonColors(contentColor = PlatinumPrimary)
             ) {
-                if (isPrimary) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(Dimens.RadiusXS))
-                            .background(PlatinumSurfaceContainer)
-                            .padding(horizontal = Dimens.SpacingXS, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.badge_primary),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = PlatinumOnSurface,
-                            fontSize = 10.sp
-                        )
-                    }
-                }
-
                 Text(
-                    text = app.cacheSizeFormatted,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = PlatinumOnSurface,
+                    text = "Clean",
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold
                 )
             }
@@ -436,19 +694,14 @@ fun RealAppCacheRowItem(
 }
 
 @Composable
-fun ErrorCard(
-    message: String,
-    modifier: Modifier = Modifier
-) {
+fun ErrorCard(message: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(Dimens.RadiusMD),
         color = PlatinumSurfaceContainerLow
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(Dimens.SpacingMD),
+            modifier = Modifier.fillMaxWidth().padding(Dimens.SpacingMD),
             horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingSM),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -459,7 +712,7 @@ fun ErrorCard(
                 modifier = Modifier.size(18.dp)
             )
             Text(
-                text = stringResource(R.string.error_text),
+                text = message.ifBlank { stringResource(R.string.error_text) },
                 style = MaterialTheme.typography.bodySmall,
                 color = PlatinumOnSurfaceVariant
             )

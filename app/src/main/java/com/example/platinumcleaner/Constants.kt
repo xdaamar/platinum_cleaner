@@ -13,6 +13,7 @@ object Constants {
     const val TAG_SERVICE = "PlatinumCleanerService"
     const val TAG_REPO = "AppCleanerRepository"
     const val TAG_VIEWMODEL = "DashboardViewModel"
+    const val TAG_SESSION = "CleanSessionManager"
 
     // === CACHE FORMATTING ===
     const val BYTES_PER_KB = 1_024L
@@ -21,4 +22,37 @@ object Constants {
 
     // === UI ===
     const val MAX_DASHBOARD_APP_ITEMS = 5
+
+    // === AUTO-CLEAN NAVIGATION LABELS (Multi-OEM) ===
+    // Mencakup variasi teks dari AOSP (Pixel), Samsung One UI, Xiaomi MIUI, dll.
+    // Sesuai 02_coding_standards.md: No Magic Strings.
+    val STORAGE_LABELS = listOf(
+        "Storage",
+        "Penyimpanan",
+        "Storage & cache",
+        "Storage and cache",
+        "Penyimpanan & cache",
+        "Penggunaan penyimpanan"
+    )
+
+    val CLEAR_CACHE_LABELS = listOf(
+        "Clear cache",
+        "Hapus cache",
+        "Clear Cache",
+        "CLEAR CACHE",
+        "Bersihkan cache",
+        "Delete cache"
+    )
+
+    val CONFIRM_LABELS = listOf(
+        "OK",
+        "Yes",
+        "Ya",
+        "Confirm",
+        "Konfirmasi"
+    )
+
+    // === AUTO-CLEAN TIMING (ms) ===
+    const val NAVIGATION_DELAY_MS = 600L
+    const val PHASE_TIMEOUT_MS = 5_000L
 }

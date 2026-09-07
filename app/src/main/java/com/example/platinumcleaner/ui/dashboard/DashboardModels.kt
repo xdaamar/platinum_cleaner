@@ -20,7 +20,10 @@ data class StorageMetricState(
     val reclaimableAmount: String = "1.2",
     val sweepProgress: Float = 0.68f,
     val isPurging: Boolean = false,
-    val isCleaned: Boolean = false
+    val isCleaned: Boolean = false,
+    val isCleaning: Boolean = false,
+    val cleaningTarget: String? = null,
+    val cleaningError: String? = null
 )
 
 enum class DashboardNavTab(
