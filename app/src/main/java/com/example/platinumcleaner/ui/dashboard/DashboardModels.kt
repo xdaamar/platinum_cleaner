@@ -4,6 +4,8 @@ import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Immutable
 import com.example.platinumcleaner.R
+import com.example.platinumcleaner.domain.cleaning.CleaningCapability
+import com.example.platinumcleaner.domain.cleaning.CleaningResult
 
 @Immutable
 data class AppCacheItem(
@@ -17,7 +19,8 @@ data class AppCacheItem(
 
 @Immutable
 data class StorageMetricState(
-    val reclaimableAmount: String = "1.2",
+    // Sprint 1–5 fields
+    val reclaimableAmount: String = "0.0",
     val sweepProgress: Float = 0.68f,
     val isPurging: Boolean = false,
     val isCleaned: Boolean = false,
@@ -25,10 +28,14 @@ data class StorageMetricState(
     val cleaningTarget: String? = null,
     val cleaningError: String? = null,
     val snackbarMessage: String? = null,
-    // Sprint 5: Progress overlay fields
     val currentCleanIndex: Int = 0,
     val totalCleanApps: Int = 0,
-    val currentCleanAppName: String? = null
+    val currentCleanAppName: String? = null,
+    // Sprint 6: Capability-based fields
+    /** Strategy yang sedang/terakhir digunakan — ditampilkan di UI (honest wording §22) */
+    val activeStrategy: CleaningCapability? = null,
+    /** Hasil terverifikasi dari sesi terakhir */
+    val lastCleaningResult: CleaningResult? = null
 )
 
 enum class DashboardNavTab(

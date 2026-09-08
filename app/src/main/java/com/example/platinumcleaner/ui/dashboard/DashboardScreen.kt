@@ -105,14 +105,14 @@ fun DashboardScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     // ===================================================
-    // Sprint 4: ON_RESUME Lifecycle Observer
-    // Trigger refreshData() saat app kembali dari background/Settings.
+    // Sprint 6: ON_RESUME Lifecycle Observer
+    // Dua skenario: (1) ada pending verification → verify, (2) tidak → refresh biasa.
     // DisposableEffect memastikan observer di-remove saat Composable keluar.
     // ===================================================
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshData()
+                viewModel.onAppResumed() // Sprint 6: verification-aware resume
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -199,7 +199,7 @@ fun DashboardScreen(
             item {
                 PrimaryActionButton(
                     state = metricState,
-                    onClick = { viewModel.triggerCleanLargest() }
+                    onClick = { viewModel.triggerSmartClean() } // Sprint 6: Orchestrator-driven
                 )
             }
 

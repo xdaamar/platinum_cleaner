@@ -2,18 +2,53 @@ package com.example.platinumcleaner.service
 
 import android.util.Log
 import com.example.platinumcleaner.Constants
+import com.example.platinumcleaner.domain.cleaning.CleaningCapability
+import com.example.platinumcleaner.domain.cleaning.CleaningResult
+import com.example.platinumcleaner.domain.cleaning.VerificationStatus
 
 /**
- * CleanSessionManager — Singleton sesi cleaning dengan dukungan antrian (batch mode).
+ * CleanSessionManager — Strategy-agnostic session state machine.
  *
- * Sprint 5 Enhancement:
- * - Batch mode: `startBatchSession(packages)` untuk antrian multiple apps
- * - `moveToNext()`: pindah ke app berikutnya dalam antrian, return null jika antrian habis
- * - Double-execution guard tetap dipertahankan dari Sprint 4
+ * Sprint 6 Refactor: Diubah dari "queue manager untuk AccessibilityService"
+ * menjadi pure state machine yang tidak tahu tentang Accessibility sama sekali.
  *
- * Sesuai 03_security_protocols.md: Service hanya aktif saat ada sesi eksplisit dari user.
+ * States:
+ * Idle → Scanning → Planning → ResolvingCapability →
+ * Executing → WaitingForResume → Verifying → Completed
+ *
+ * Failure path:
+ * Executing → Failed → FallbackAvailable → (fallback atau user decision)
+ *
+ * Sesuai ai_task.md §17: Strategy-agnostic state machine.
+ * Sesuai ai_task.md §18: Session survive lifecycle events (in-memory untuk sprint ini).
  */
 object CleanSessionManager {
+
+    private const val TAG = "CleanSessionManager"
+
+    // ===================================================
+    // State Machine
+    // ===================================================
+
+    enum class SessionState {
+        IDLE,
+        SCANNING,
+        PLANNING,
+        RESOLVING_CAPABILITY,
+        EXECUTING,
+        WAITING_FOR_RESUME,
+        VERIFYING,
+        COMPLETED,
+        FAILED
+    }
+
+    @Volatile
+    var currentState: SessionState = SessionState.IDLE
+        private set
+
+    // ===================================================
+    // Session Data
+    // ===================================================
 
     @Volatile
     var isActive: Boolean = false
@@ -23,7 +58,15 @@ object CleanSessionManager {
     var targetPackageName: String? = null
         private set
 
-    // Sprint 5: Antrian batch
+    @Volatile
+    var selectedCapability: CleaningCapability? = null
+        private set
+
+    @Volatile
+    var pendingResult: CleaningResult? = null
+        private set
+
+    // Antrian untuk batch mode
     private val targetQueue: ArrayDeque<String> = ArrayDeque()
 
     @Volatile
@@ -35,7 +78,7 @@ object CleanSessionManager {
         private set
 
     // ===================================================
-    // Single app session (backward compatible)
+    // State Transitions
     // ===================================================
 
     /**
@@ -44,7 +87,7 @@ object CleanSessionManager {
      */
     fun startSession(packageName: String): Boolean {
         if (isActive) {
-            Log.w(Constants.TAG_SESSION, "Sesi masih aktif — request diabaikan")
+            Log.w(TAG, "Sesi masih aktif untuk $targetPackageName — request diabaikan")
             return false
         }
         targetQueue.clear()
@@ -53,52 +96,69 @@ object CleanSessionManager {
         currentIndex = 0
         targetPackageName = packageName
         isActive = true
-        Log.d(Constants.TAG_SESSION, "Sesi tunggal dimulai: $packageName")
+        transitionTo(SessionState.PLANNING)
+        Log.d(TAG, "Sesi dimulai: $packageName")
         return true
     }
 
-    // ===================================================
-    // Sprint 5: Batch session
-    // ===================================================
-
     /**
-     * Mulai sesi batch untuk beberapa app sekaligus.
-     * @param packages Daftar package yang akan dibersihkan secara berurutan.
-     * @return false jika sesi sebelumnya masih aktif.
+     * Mulai sesi batch untuk beberapa app.
      */
     fun startBatchSession(packages: List<String>): Boolean {
         if (isActive) {
-            Log.w(Constants.TAG_SESSION, "Sesi batch masih aktif — request diabaikan")
+            Log.w(TAG, "Sesi masih aktif — request batch diabaikan")
             return false
         }
-        if (packages.isEmpty()) {
-            Log.w(Constants.TAG_SESSION, "Daftar package kosong — tidak ada yang dilakukan")
-            return false
-        }
+        if (packages.isEmpty()) return false
         targetQueue.clear()
         targetQueue.addAll(packages)
         totalApps = packages.size
         currentIndex = 0
         targetPackageName = targetQueue.first()
         isActive = true
-        Log.d(Constants.TAG_SESSION, "Sesi batch dimulai: ${packages.size} app")
+        transitionTo(SessionState.PLANNING)
+        Log.d(TAG, "Sesi batch dimulai: ${packages.size} app")
         return true
     }
 
+    fun markExecuting(capability: CleaningCapability) {
+        selectedCapability = capability
+        transitionTo(SessionState.EXECUTING)
+    }
+
+    fun markWaitingForResume(result: CleaningResult) {
+        pendingResult = result
+        transitionTo(SessionState.WAITING_FOR_RESUME)
+    }
+
+    fun markVerifying() {
+        transitionTo(SessionState.VERIFYING)
+    }
+
+    fun markCompleted() {
+        transitionTo(SessionState.COMPLETED)
+        endSession()
+    }
+
+    fun markFailed() {
+        transitionTo(SessionState.FAILED)
+        endSession()
+    }
+
     /**
-     * Pindah ke app berikutnya dalam antrian.
-     * @return Package name app berikutnya, atau null jika antrian sudah habis.
+     * Pindah ke app berikutnya (batch mode).
+     * @return Package name berikutnya, atau null jika antrian habis.
      */
     fun moveToNext(): String? {
         if (targetQueue.isNotEmpty()) targetQueue.removeFirst()
         currentIndex++
-
         return if (targetQueue.isNotEmpty()) {
             targetPackageName = targetQueue.first()
-            Log.d(Constants.TAG_SESSION, "Pindah ke app ${currentIndex + 1}/$totalApps: $targetPackageName")
+            Log.d(TAG, "Batch: app ${currentIndex + 1}/$totalApps → $targetPackageName")
+            transitionTo(SessionState.EXECUTING)
             targetPackageName
         } else {
-            Log.d(Constants.TAG_SESSION, "Antrian habis — semua app selesai")
+            Log.d(TAG, "Antrian habis — semua app selesai")
             null
         }
     }
@@ -107,11 +167,19 @@ object CleanSessionManager {
      * Akhiri sesi — bersihkan semua state.
      */
     fun endSession() {
-        Log.d(Constants.TAG_SESSION, "Sesi diakhiri. Target terakhir: $targetPackageName")
+        Log.d(TAG, "Sesi diakhiri. State: $currentState | Target terakhir: $targetPackageName")
         targetQueue.clear()
         targetPackageName = null
+        selectedCapability = null
+        pendingResult = null
         currentIndex = 0
         totalApps = 0
         isActive = false
+        currentState = SessionState.IDLE
+    }
+
+    private fun transitionTo(state: SessionState) {
+        Log.d(TAG, "State: $currentState → $state")
+        currentState = state
     }
 }
