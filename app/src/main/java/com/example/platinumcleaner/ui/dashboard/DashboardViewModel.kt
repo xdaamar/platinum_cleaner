@@ -81,12 +81,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun onAppResumed() {
         val pending = pendingCleaningResult
+        Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] onResume | hasPendingResult=${pending != null} | sessionState=${CleanSessionManager.currentState} | sessionActive=${CleanSessionManager.isActive}")
         if (pending != null && CleanSessionManager.currentState ==
             CleanSessionManager.SessionState.WAITING_FOR_RESUME) {
             Log.d(Constants.TAG_VIEWMODEL, "ON_RESUME: ada pending result — mulai verifikasi")
+            Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] onResume → triggering verification pipeline")
             verifyAfterResume(pending)
         } else if (!CleanSessionManager.isActive) {
             Log.d(Constants.TAG_VIEWMODEL, "ON_RESUME: refresh data biasa")
+            Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] onResume → no active session, refreshing data")
             loadData()
         }
     }
@@ -126,9 +129,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         // Snapshot beforeBytes dari data yang sudah ada (dari Scanner)
         val beforeBytes = targetApps.associate { it.packageName to it.cacheBytes }
 
+        // Sprint 7: log context type — penting untuk diagnosa
+        Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] triggerSmartClean | contextClass=${context.javaClass.simpleName} | targets=${targetPackages.size} | packages=$targetPackages")
+        Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] beforeBytes snapshot: ${beforeBytes.entries.joinToString { "${it.key}=${it.value}B" }}")
+
         viewModelScope.launch {
             // Resolve capability dulu untuk update UI label
             val bestCapability = CapabilityResolver.resolveBest(context)
+
+            Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] bestCapability=${bestCapability.name}")
 
             // Update UI: menunjukkan strategy yang digunakan (honest)
             _metricState.value = _metricState.value.copy(
@@ -150,14 +159,18 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             )
 
             Log.d(Constants.TAG_VIEWMODEL, "[CLEAN] Menggunakan strategy: ${bestCapability.name}")
+            Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] calling orchestrator.execute()")
 
             val result = orchestrator.execute(context, request)
+
+            Log.d(Constants.TAG_CLEAN, "[RESULT] orchestrator.execute() returned overallStatus=${result.overallStatus} capability=${result.selectedCapability.name}")
 
             when (result.overallStatus) {
                 VerificationStatus.PENDING_VERIFICATION -> {
                     // Strategy membuka Settings — tunggu user kembali
                     pendingCleaningResult = result
                     CleanSessionManager.markWaitingForResume(result)
+                    Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] app meninggalkan foreground — menunggu onResume")
                     _metricState.value = _metricState.value.copy(
                         isCleaning = true,
                         currentCleanAppName = result.appResults.firstOrNull()?.packageName,
@@ -166,6 +179,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 else -> {
                     // Langsung ada hasil (jarang terjadi di sprint ini)
+                    Log.d(Constants.TAG_CLEAN, "[RESULT] immediate result (no system UI): ${result.overallStatus}")
                     handleFinalResult(result)
                 }
             }
@@ -225,9 +239,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private fun verifyAfterResume(pending: CleaningResult) {
         val context = getApplication<Application>()
         CleanSessionManager.markVerifying()
+        Log.d(Constants.TAG_CLEAN, "[VERIFICATION] verifyAfterResume starting | pendingPackages=${pending.appResults.map { it.packageName }} | beforeBytes=${pending.appResults.map { "${it.packageName}:${it.beforeBytes}B" }}")
 
         viewModelScope.launch {
             val verified = orchestrator.verifyAfterResume(context, pending)
+            Log.d(Constants.TAG_CLEAN, "[VERIFICATION] verifyAfterResume done | overallStatus=${verified.overallStatus} | totalReclaimed=${verified.totalReclaimedBytes}B")
             pendingCleaningResult = null
             handleFinalResult(verified)
         }

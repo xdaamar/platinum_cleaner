@@ -18,6 +18,11 @@ object Constants {
     const val TAG_VIEWMODEL = "DashboardViewModel"
     const val TAG_SESSION = "CleanSessionManager"
 
+    // Sprint 7: Structured debug tags — logcat filter: adb logcat -s PLATINUM_CLEAN PLATINUM_VERIFY
+    // Format: [CAPABILITY] [ORCHESTRATOR] [STRATEGY] [INTENT] [LIFECYCLE] [VERIFICATION] [RESULT] [PERMISSION]
+    const val TAG_CLEAN = "PLATINUM_CLEAN"
+    const val TAG_VERIFY = "PLATINUM_VERIFY"
+
     // === CACHE FORMATTING ===
     const val BYTES_PER_KB = 1_024L
     const val BYTES_PER_MB = 1_048_576L

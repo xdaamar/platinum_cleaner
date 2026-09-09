@@ -3,6 +3,7 @@ package com.example.platinumcleaner.platform.cleaning
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.example.platinumcleaner.Constants
 import com.example.platinumcleaner.domain.cleaning.AppCleanResult
 import com.example.platinumcleaner.domain.cleaning.CleaningCapability
 import com.example.platinumcleaner.domain.cleaning.CleaningRequest
@@ -32,6 +33,8 @@ import com.example.platinumcleaner.domain.verification.VerificationEngine
  *
  * Sesuai ai_task.md §9: Priority 1 strategy.
  * Sesuai ai_task.md §34: Tidak melakukan data deletion.
+ *
+ * Sprint 7: Tambah structured logging [INTENT] untuk diagnosa eksekusi fisik.
  */
 class SystemCacheStrategy : CleaningStrategy {
 
@@ -45,24 +48,44 @@ class SystemCacheStrategy : CleaningStrategy {
 
     override suspend fun execute(context: Context, request: CleaningRequest): CleaningResult {
         Log.d(
-            tag, "[CLEAN] strategy=SYSTEM_CACHE " +
+            Constants.TAG_CLEAN, "[STRATEGY] strategy=SYSTEM_CACHE " +
                     "capability=ACTION_CLEAR_APP_CACHE " +
                     "state=EXECUTING " +
                     "requestId=${request.requestId} " +
                     "targets=${request.targetPackages.size}"
         )
+        Log.d(tag, "[CLEAN] strategy=SYSTEM_CACHE requestId=${request.requestId} targets=${request.targetPackages.size}")
+
+        // Log context type — penting untuk diagnosa crash dari Application context
+        Log.d(Constants.TAG_CLEAN, "[INTENT] contextClass=${context.javaClass.simpleName} (must be Activity or Application with FLAG_ACTIVITY_NEW_TASK)")
 
         if (request.targetPackages.isEmpty()) {
+            Log.w(Constants.TAG_CLEAN, "[STRATEGY] targetPackages kosong — return UNKNOWN")
             return buildEmptyResult(request)
         }
 
         return try {
-            // Launch system-managed cache clear
-            val intent = Intent("android.intent.action.CLEAR_APP_CACHE").apply {
+            // Sprint 7 diagnostic: log action string dan resolve info SEBELUM launch
+            val actionString = "android.intent.action.CLEAR_APP_CACHE"
+            val intent = Intent(actionString).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            context.startActivity(intent)
 
+            // Cek resolveActivity — apakah ada handler?
+            val resolveInfo = context.packageManager.resolveActivity(
+                intent,
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+            )
+            Log.d(Constants.TAG_CLEAN, "[INTENT] action=\"$actionString\" resolveActivity=${resolveInfo?.activityInfo?.let { "${it.packageName}/${it.name}" } ?: "null (UNRESOLVABLE)"}")
+
+            if (resolveInfo == null) {
+                Log.w(Constants.TAG_CLEAN, "[INTENT] INTENT_UNAVAILABLE — tidak ada activity yang bisa handle ACTION_CLEAR_APP_CACHE")
+            }
+
+            // Launch intent
+            Log.d(Constants.TAG_CLEAN, "[INTENT] calling startActivity()")
+            context.startActivity(intent)
+            Log.d(Constants.TAG_CLEAN, "[INTENT] startActivity() returned (tidak crash)")
             Log.d(tag, "[CLEAN] state=WAITING_FOR_SYSTEM intent launched")
 
             // Buat pending results untuk semua target
@@ -78,6 +101,8 @@ class SystemCacheStrategy : CleaningStrategy {
                 )
             }
 
+            Log.d(Constants.TAG_CLEAN, "[STRATEGY] result=PENDING_VERIFICATION packages=${request.targetPackages}")
+
             CleaningResult(
                 requestId = request.requestId,
                 appResults = pendingResults,
@@ -85,28 +110,20 @@ class SystemCacheStrategy : CleaningStrategy {
                 overallStatus = VerificationStatus.PENDING_VERIFICATION
             )
 
+        } catch (e: android.content.ActivityNotFoundException) {
+            Log.e(Constants.TAG_CLEAN, "[INTENT] ActivityNotFoundException: ${e.message} — ACTION_CLEAR_APP_CACHE tidak tersedia di perangkat ini")
+            Log.e(tag, "System cache intent ActivityNotFoundException: ${e.message}")
+            buildFailedResult(request, "ActivityNotFoundException: ${e.message}")
+
+        } catch (e: SecurityException) {
+            Log.e(Constants.TAG_CLEAN, "[INTENT] SecurityException: ${e.message} — mungkin membutuhkan permission tambahan atau blocked oleh OEM")
+            Log.e(tag, "System cache intent SecurityException: ${e.message}")
+            buildFailedResult(request, "SecurityException: ${e.message}")
+
         } catch (e: Exception) {
+            Log.e(Constants.TAG_CLEAN, "[INTENT] Exception(${e.javaClass.simpleName}): ${e.message}")
             Log.e(tag, "System cache intent gagal: ${e.message}")
-
-            // Buat failed results
-            val failedResults = request.targetPackages.map { packageName ->
-                AppCleanResult(
-                    packageName = packageName,
-                    appName = getAppName(context, packageName),
-                    beforeBytes = request.preCleanCacheBytes[packageName] ?: 0L,
-                    afterBytes = -1L,
-                    status = VerificationStatus.FAILED,
-                    usedCapability = capability,
-                    errorMessage = e.message
-                )
-            }
-
-            CleaningResult(
-                requestId = request.requestId,
-                appResults = failedResults,
-                selectedCapability = capability,
-                overallStatus = VerificationStatus.FAILED
-            )
+            buildFailedResult(request, e.message)
         }
     }
 
@@ -124,5 +141,22 @@ class SystemCacheStrategy : CleaningStrategy {
         appResults = emptyList(),
         selectedCapability = capability,
         overallStatus = VerificationStatus.UNKNOWN
+    )
+
+    private fun buildFailedResult(request: CleaningRequest, error: String?) = CleaningResult(
+        requestId = request.requestId,
+        appResults = request.targetPackages.map { packageName ->
+            AppCleanResult(
+                packageName = packageName,
+                appName = packageName, // Simplified — avoid context leak in error path
+                beforeBytes = request.preCleanCacheBytes[packageName] ?: 0L,
+                afterBytes = -1L,
+                status = VerificationStatus.FAILED,
+                usedCapability = capability,
+                errorMessage = error
+            )
+        },
+        selectedCapability = capability,
+        overallStatus = VerificationStatus.FAILED
     )
 }

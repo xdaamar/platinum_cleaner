@@ -86,19 +86,26 @@ object VerificationEngine {
     ): Pair<Long, VerificationStatus> = withContext(Dispatchers.IO) {
         if (beforeBytes <= 0L) {
             Log.w(TAG, "[$packageName] beforeBytes tidak valid ($beforeBytes) — UNKNOWN")
+            Log.w(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] $packageName | beforeBytes=$beforeBytes INVALID — returning UNKNOWN")
             return@withContext Pair(-1L, VerificationStatus.UNKNOWN)
         }
 
+        // Sprint 7: Log initial state
+        Log.d(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] START $packageName | beforeBytes=${formatBytes(beforeBytes)} | maxRetries=$maxRetries | retryDelayMs=${retryDelayMs}ms")
+
         var afterBytes = -1L
         var status = VerificationStatus.PENDING_VERIFICATION
+        val startTimeMs = System.currentTimeMillis()
 
         // Bounded retry — tidak infinite
         repeat(maxRetries) { attempt ->
             kotlinx.coroutines.delay(retryDelayMs)
             val current = queryCacheBytes(context, packageName)
+            val elapsedMs = System.currentTimeMillis() - startTimeMs
 
             if (current < 0L) {
                 Log.w(TAG, "[$packageName] Gagal query attempt ${attempt + 1}")
+                Log.w(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] sample${attempt + 1} $packageName | elapsed=${elapsedMs}ms | QUERY_FAILED (StorageStatsManager error)")
                 return@repeat
             }
 
@@ -112,14 +119,28 @@ object VerificationEngine {
                         "reclaimed=${formatBytes(maxOf(0L, beforeBytes - afterBytes))} " +
                         "result=$status (attempt ${attempt + 1}/$maxRetries)"
             )
+            // Sprint 7: structured log dengan elapsed time untuk timing analysis
+            Log.d(
+                com.example.platinumcleaner.Constants.TAG_VERIFY,
+                "[VERIFICATION] sample${attempt + 1}/$maxRetries $packageName | " +
+                        "elapsed=${elapsedMs}ms | " +
+                        "before=${formatBytes(beforeBytes)} | " +
+                        "after=${formatBytes(afterBytes)} | " +
+                        "reclaimed=${formatBytes(maxOf(0L, beforeBytes - afterBytes))} | " +
+                        "status=$status"
+            )
 
             // Jika sudah ada perubahan, tidak perlu retry lagi
             if (status != VerificationStatus.NO_CHANGE &&
                 status != VerificationStatus.PENDING_VERIFICATION
             ) {
+                Log.d(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] EARLY_EXIT $packageName | status=$status at elapsed=${elapsedMs}ms")
                 return@withContext Pair(afterBytes, status)
             }
         }
+
+        val totalElapsed = System.currentTimeMillis() - startTimeMs
+        Log.d(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] END $packageName | finalStatus=$status | totalElapsed=${totalElapsed}ms | afterBytes=${formatBytes(afterBytes)}")
 
         Pair(afterBytes, status)
     }

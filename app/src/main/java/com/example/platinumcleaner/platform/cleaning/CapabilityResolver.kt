@@ -89,8 +89,11 @@ object CapabilityResolver {
      */
     fun isSystemWideCacheAvailable(context: Context): Boolean {
         return try {
-            // Cek apakah ada activity yang bisa handle intent ini
-            val intent = Intent("android.intent.action.CLEAR_APP_CACHE").apply {
+            // Sprint 7: Diagnosa — log exact action string dan API level
+            val actionString = "android.intent.action.CLEAR_APP_CACHE"
+            Log.d(com.example.platinumcleaner.Constants.TAG_CLEAN, "[CAPABILITY] Checking ACTION_CLEAR_APP_CACHE | action=\"$actionString\" | apiLevel=${android.os.Build.VERSION.SDK_INT} | device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+
+            val intent = Intent(actionString).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             val resolveInfo = context.packageManager.resolveActivity(
@@ -99,10 +102,13 @@ object CapabilityResolver {
             )
 
             val isAvailable = resolveInfo != null
+            val resolveDetail = resolveInfo?.activityInfo?.let { "${it.packageName}/${it.name}" } ?: "null"
             Log.d(TAG, "ACTION_CLEAR_APP_CACHE resolvable: $isAvailable")
+            Log.d(com.example.platinumcleaner.Constants.TAG_CLEAN, "[CAPABILITY] ACTION_CLEAR_APP_CACHE resolvable=$isAvailable resolvedActivity=$resolveDetail")
             isAvailable
         } catch (e: Exception) {
             Log.w(TAG, "Error cek system cache capability: ${e.message}")
+            Log.w(com.example.platinumcleaner.Constants.TAG_CLEAN, "[CAPABILITY] Error checking ACTION_CLEAR_APP_CACHE: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
@@ -154,6 +160,8 @@ object CapabilityResolver {
      * Diperlukan oleh Scanner untuk membaca cache statistics.
      */
     fun hasUsageAccess(context: Context): Boolean {
-        return PermissionHelper.hasUsageStatsPermission(context)
+        val hasAccess = PermissionHelper.hasUsageStatsPermission(context)
+        Log.d(com.example.platinumcleaner.Constants.TAG_CLEAN, "[PERMISSION] PACKAGE_USAGE_STATS granted=$hasAccess")
+        return hasAccess
     }
 }
