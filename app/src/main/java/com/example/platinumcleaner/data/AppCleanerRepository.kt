@@ -14,16 +14,23 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 
+import com.example.platinumcleaner.ui.dashboard.InventorySummary
+
 /**
  * Repository layer untuk mengambil data aplikasi dan cache dari perangkat.
  *
  * Sesuai 04_performance_budget.md: Semua operasi I/O WAJIB di Dispatchers.IO.
  * Sesuai 03_security_protocols.md: Tidak ada network call. 100% on-device.
  * Sesuai 02_coding_standards.md: Single Responsibility, No Magic Numbers.
+ * Sesuai Sprint V8 PRD Override: Real package inventory, deduplication, categorization.
  */
 class AppCleanerRepository(private val context: Context) {
 
     private val packageManager: PackageManager = context.packageManager
+
+    /** Authoritative inventory summary dari hasil scan terakhir */
+    var lastInventorySummary: InventorySummary = InventorySummary()
+        private set
 
     /**
      * Mengambil daftar aplikasi yang terinstall beserta ukuran cache masing-masing.
@@ -40,36 +47,69 @@ class AppCleanerRepository(private val context: Context) {
 
             // Ambil daftar semua package yang terinstall untuk user
             @Suppress("DEPRECATION")
-            val installedPackages = packageManager.getInstalledPackages(0)
+            val rawPackages = packageManager.getInstalledPackages(0)
+
+            // V8 FIX: Deduplikasi package berdasarkan packageName
+            val uniquePackages = LinkedHashMap<String, android.content.pm.PackageInfo>()
+            for (pkg in rawPackages) {
+                if (uniquePackages.containsKey(pkg.packageName)) {
+                    Log.d(Constants.TAG_REPO, "[DUPLICATE_PACKAGE] package=${pkg.packageName}")
+                } else {
+                    uniquePackages[pkg.packageName] = pkg
+                }
+            }
+
+            var userAppsCount = 0
+            var systemAppsCount = 0
+            var launchableAppsCount = 0
+
+            for (packageInfo in uniquePackages.values) {
+                val isSystem = (packageInfo.applicationInfo.flags and
+                        android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                if (isSystem) systemAppsCount++ else userAppsCount++
+
+                val isLaunchable = packageManager.getLaunchIntentForPackage(packageInfo.packageName) != null
+                if (isLaunchable) launchableAppsCount++
+            }
 
             val appList = mutableListOf<AppInfo>()
 
-            for (packageInfo in installedPackages) {
+            for (packageInfo in uniquePackages.values) {
                 try {
                     val isSystemApp = (packageInfo.applicationInfo.flags and
                             android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                    val isLaunchable = packageManager.getLaunchIntentForPackage(packageInfo.packageName) != null
+                    val isEnabled = packageInfo.applicationInfo.enabled
+                    val uid = packageInfo.applicationInfo.uid
 
                     // Ambil ukuran cache via StorageStatsManager
                     val storageStats = storageStatsManager.queryStatsForPackage(
                         StorageManager.UUID_DEFAULT,
                         packageInfo.packageName,
-                        UserHandle.getUserHandleForUid(packageInfo.applicationInfo.uid)
+                        UserHandle.getUserHandleForUid(uid)
                     )
 
                     val cacheBytes = storageStats.cacheBytes
 
                     // Hanya masukkan app yang punya cache (> 0 bytes)
                     if (cacheBytes > 0L) {
-                        val appName = packageManager.getApplicationLabel(
-                            packageInfo.applicationInfo
-                        ).toString()
+                        val appName = try {
+                            packageManager.getApplicationLabel(
+                                packageInfo.applicationInfo
+                            ).toString()
+                        } catch (e: Exception) {
+                            packageInfo.packageName
+                        }
 
                         appList.add(
                             AppInfo(
                                 packageName = packageInfo.packageName,
                                 appName = appName,
                                 cacheBytes = cacheBytes,
-                                isSystemApp = isSystemApp
+                                isSystemApp = isSystemApp,
+                                isLaunchable = isLaunchable,
+                                isEnabled = isEnabled,
+                                uid = uid
                             )
                         )
                     }
@@ -81,8 +121,21 @@ class AppCleanerRepository(private val context: Context) {
 
             // Urutkan berdasarkan ukuran cache terbesar
             val sortedList = appList.sortedByDescending { it.cacheBytes }
+            val totalMeasuredCache = sortedList.sumOf { it.cacheBytes }
 
-            Log.d(Constants.TAG_REPO, "Berhasil membaca ${sortedList.size} aplikasi dengan cache")
+            lastInventorySummary = InventorySummary(
+                rawPackagesCount = rawPackages.size,
+                userAppsCount = userAppsCount,
+                systemAppsCount = systemAppsCount,
+                launchableAppsCount = launchableAppsCount,
+                measurableCacheAppsCount = sortedList.size,
+                totalMeasuredCacheBytes = totalMeasuredCache
+            )
+
+            Log.d(
+                Constants.TAG_REPO,
+                "[INVENTORY] rawPackages=${rawPackages.size} unique=${uniquePackages.size} userApps=$userAppsCount systemApps=$systemAppsCount launchableApps=$launchableAppsCount measurableCacheApps=${sortedList.size} totalCacheBytes=$totalMeasuredCache"
+            )
             emit(UiState.Success(sortedList))
 
         } catch (e: SecurityException) {

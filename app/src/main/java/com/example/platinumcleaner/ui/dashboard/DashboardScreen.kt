@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,9 +33,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -43,6 +46,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -102,6 +106,8 @@ fun DashboardScreen(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     var showPermissionSheet by remember { mutableStateOf(false) }
+    var showViewAllSheet by remember { mutableStateOf(false) }
+    val inventorySummary by viewModel.inventorySummary.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     // ===================================================
@@ -155,6 +161,20 @@ fun DashboardScreen(
                 }
             )
         }
+    }
+
+    // V8: Full Real Inventory Bottom Sheet (View All)
+    if (showViewAllSheet) {
+        val allApps = (appsState as? UiState.Success)?.data ?: emptyList()
+        ViewAllInventorySheet(
+            apps = allApps,
+            inventorySummary = inventorySummary,
+            onCleanApp = { pkg ->
+                showViewAllSheet = false
+                viewModel.initiateCleanForApp(pkg)
+            },
+            onDismiss = { showViewAllSheet = false }
+        )
     }
 
     Scaffold(
@@ -216,6 +236,7 @@ fun DashboardScreen(
                             RealAppListSection(
                                 apps = topApps,
                                 totalCount = state.data.size,
+                                onViewAllClick = { showViewAllSheet = true },
                                 onCleanApp = { viewModel.initiateCleanForApp(it) }
                             )
                         }
@@ -517,6 +538,7 @@ fun LoadingShimmer(modifier: Modifier = Modifier) {
 fun RealAppListSection(
     apps: List<AppInfo>,
     totalCount: Int,
+    onViewAllClick: () -> Unit,
     onCleanApp: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -531,8 +553,8 @@ fun RealAppListSection(
                 color = PlatinumOnSurface,
                 fontWeight = FontWeight.SemiBold
             )
-            TextButton(onClick = {}) {
-                Text("View All ($totalCount)", style = MaterialTheme.typography.labelMedium, color = PlatinumOnSurfaceVariant)
+            TextButton(onClick = onViewAllClick) {
+                Text("Lihat Semua ($totalCount)", style = MaterialTheme.typography.labelMedium, color = PlatinumOnSurfaceVariant)
             }
         }
         Column(verticalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)) {
@@ -578,13 +600,268 @@ fun RealAppCacheRowItem(
                     )
                 }
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(app.appName, style = MaterialTheme.typography.titleSmall, color = PlatinumOnSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(app.cacheSizeFormatted, style = MaterialTheme.typography.bodySmall, color = PlatinumOnSurfaceVariant)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingXXS)
+                    ) {
+                        Text(
+                            app.appName,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = PlatinumOnSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (app.isSystemApp) {
+                            Surface(
+                                shape = RoundedCornerShape(Dimens.RadiusXS),
+                                color = PlatinumSurfaceContainerHigh
+                            ) {
+                                Text(
+                                    text = "Sistem",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 9.sp,
+                                    color = PlatinumOnSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = "${app.cacheSizeFormatted} • ${app.packageName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PlatinumOnSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
             Spacer(Modifier.width(Dimens.SpacingSM))
             TextButton(onClick = onClean, colors = ButtonDefaults.textButtonColors(contentColor = PlatinumPrimary)) {
-                Text("Clean", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Text("Bersihkan", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+// ===================================================
+// V8: View All Inventory Bottom Sheet
+// ===================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ViewAllInventorySheet(
+    apps: List<AppInfo>,
+    inventorySummary: InventorySummary,
+    onCleanApp: (String) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilter by remember { mutableStateOf(PackageCategoryFilter.ALL) }
+
+    val filteredApps = remember(apps, searchQuery, selectedFilter) {
+        apps.filter { app ->
+            val matchesSearch = searchQuery.isBlank() ||
+                    app.appName.contains(searchQuery, ignoreCase = true) ||
+                    app.packageName.contains(searchQuery, ignoreCase = true)
+            val matchesFilter = when (selectedFilter) {
+                PackageCategoryFilter.ALL -> true
+                PackageCategoryFilter.USER_ONLY -> !app.isSystemApp
+                PackageCategoryFilter.SYSTEM_ONLY -> app.isSystemApp
+            }
+            matchesSearch && matchesFilter
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = PlatinumBackground,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.SpacingLG)
+                .navigationBarsPadding()
+        ) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = Dimens.SpacingSM),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Inventaris Aplikasi",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = PlatinumOnSurface
+                    )
+                    Text(
+                        text = "${inventorySummary.measurableCacheAppsCount} aplikasi ber-cache terdeteksi",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PlatinumOnSurfaceVariant
+                    )
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Tutup", color = PlatinumOnSurfaceVariant, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // Summary Metrics Card
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = Dimens.SpacingMD),
+                shape = RoundedCornerShape(Dimens.RadiusMD),
+                color = PlatinumSurface,
+                shadowElevation = Dimens.ElevationSoft
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(Dimens.SpacingMD),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${inventorySummary.rawPackagesCount}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(
+                            text = "Dipindai",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PlatinumOnSurfaceVariant
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${inventorySummary.userAppsCount}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(
+                            text = "Pengguna",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PlatinumOnSurfaceVariant
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${inventorySummary.systemAppsCount}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(
+                            text = "Sistem",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PlatinumOnSurfaceVariant
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${inventorySummary.measurableCacheAppsCount}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(
+                            text = "Ber-cache",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PlatinumOnSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Search Box
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Cari nama atau paket aplikasi...", style = MaterialTheme.typography.bodySmall) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = Dimens.SpacingSM),
+                shape = RoundedCornerShape(Dimens.RadiusMD),
+                singleLine = true,
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        Text(
+                            text = "✕",
+                            modifier = Modifier
+                                .clickable { searchQuery = "" }
+                                .padding(8.dp),
+                            color = PlatinumOnSurfaceVariant
+                        )
+                    }
+                }
+            )
+
+            // Category Filter Chips
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = Dimens.SpacingSM),
+                horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)
+            ) {
+                FilterChip(
+                    selected = selectedFilter == PackageCategoryFilter.ALL,
+                    onClick = { selectedFilter = PackageCategoryFilter.ALL },
+                    label = { Text("Semua (${apps.size})", style = MaterialTheme.typography.labelSmall) }
+                )
+                FilterChip(
+                    selected = selectedFilter == PackageCategoryFilter.USER_ONLY,
+                    onClick = { selectedFilter = PackageCategoryFilter.USER_ONLY },
+                    label = { Text("Pengguna (${apps.count { !it.isSystemApp }})", style = MaterialTheme.typography.labelSmall) }
+                )
+                FilterChip(
+                    selected = selectedFilter == PackageCategoryFilter.SYSTEM_ONLY,
+                    onClick = { selectedFilter = PackageCategoryFilter.SYSTEM_ONLY },
+                    label = { Text("Sistem (${apps.count { it.isSystemApp }})", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            // App List
+            if (filteredApps.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Tidak ada aplikasi yang cocok",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = PlatinumOnSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 480.dp),
+                    verticalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)
+                ) {
+                    items(filteredApps.size, key = { filteredApps[it].packageName }) { index ->
+                        val app = filteredApps[index]
+                        RealAppCacheRowItem(
+                            app = app,
+                            onClean = { onCleanApp(app.packageName) }
+                        )
+                    }
+                    item {
+                        Spacer(modifier = Modifier.height(Dimens.Spacing2XL))
+                    }
+                }
             }
         }
     }

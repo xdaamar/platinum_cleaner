@@ -48,13 +48,16 @@ enum class DashboardNavTab(
     SETTINGS(R.string.nav_settings, R.drawable.ic_nav_settings)
 }
 
-// Real data models for Sprint 2
+// Real data models for Sprint 2 & V8 inventory realignment
 @Immutable
 data class AppInfo(
     val packageName: String,
     val appName: String,
     val cacheBytes: Long,
-    val isSystemApp: Boolean = false
+    val isSystemApp: Boolean = false,
+    val isLaunchable: Boolean = true,
+    val isEnabled: Boolean = true,
+    val uid: Int = 0
 ) {
     val cacheSizeFormatted: String
         get() = when {
@@ -64,6 +67,22 @@ data class AppInfo(
             else -> "$cacheBytes B"
         }
 }
+
+enum class PackageCategoryFilter {
+    ALL,
+    USER_ONLY,
+    SYSTEM_ONLY
+}
+
+@Immutable
+data class InventorySummary(
+    val rawPackagesCount: Int = 0,
+    val userAppsCount: Int = 0,
+    val systemAppsCount: Int = 0,
+    val launchableAppsCount: Int = 0,
+    val measurableCacheAppsCount: Int = 0,
+    val totalMeasuredCacheBytes: Long = 0L
+)
 
 sealed class UiState<out T> {
     object Loading : UiState<Nothing>()

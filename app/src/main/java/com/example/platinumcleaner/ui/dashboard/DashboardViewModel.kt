@@ -53,6 +53,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _capabilityState = MutableStateFlow(CapabilityState())
     val capabilityState: StateFlow<CapabilityState> = _capabilityState.asStateFlow()
 
+    // V8: Authoritative inventory summary
+    private val _inventorySummary = MutableStateFlow(InventorySummary())
+    val inventorySummary: StateFlow<InventorySummary> = _inventorySummary.asStateFlow()
+
     // Pending result yang menunggu verification setelah ON_RESUME
     private var pendingCleaningResult: CleaningResult? = null
 
@@ -409,6 +413,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 _appsState.value = state
                 if (state is UiState.Success) {
                     val apps = state.data
+                    _inventorySummary.value = repository.lastInventorySummary
                     val totalCache = repository.calculateTotalCacheFormatted(apps)
                     _metricState.value = _metricState.value.copy(
                         reclaimableAmount = totalCache,
