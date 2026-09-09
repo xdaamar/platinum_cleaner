@@ -49,11 +49,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _needsPermission = MutableStateFlow(false)
     val needsPermission: StateFlow<Boolean> = _needsPermission.asStateFlow()
 
+    // Sprint 7: Capability preflight state
+    private val _capabilityState = MutableStateFlow(CapabilityState())
+    val capabilityState: StateFlow<CapabilityState> = _capabilityState.asStateFlow()
+
     // Pending result yang menunggu verification setelah ON_RESUME
     private var pendingCleaningResult: CleaningResult? = null
 
     init {
         loadData()
+        checkCapabilities()
         observeServiceEvents() // Backward compat untuk Accessibility path
     }
 
@@ -63,13 +68,37 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun loadData() {
         val context = getApplication<Application>()
-        if (!PermissionHelper.hasUsageStatsPermission(context)) {
+        val hasUsageAccess = PermissionHelper.hasUsageStatsPermission(context)
+        Log.d(Constants.TAG_CLEAN, "[PERMISSION] loadData | PACKAGE_USAGE_STATS granted=$hasUsageAccess")
+        if (!hasUsageAccess) {
             _needsPermission.value = true
             _appsState.value = UiState.PermissionRequired
+            checkCapabilities() // Update preflight state
             return
         }
         _needsPermission.value = false
         fetchAppsWithCache()
+        checkCapabilities()
+    }
+
+    /**
+     * Sprint 7: Check semua capability dan update PreflightState.
+     * Dipanggil saat init, loadData(), dan onAppResumed().
+     */
+    fun checkCapabilities() {
+        val context = getApplication<Application>()
+        val hasUsageAccess = PermissionHelper.hasUsageStatsPermission(context)
+        val hasSystemCacheSupport = CapabilityResolver.isSystemWideCacheAvailable(context)
+        val hasAccessibility = CapabilityResolver.isAccessibilityAutomationAvailable(context)
+
+        Log.d(Constants.TAG_CLEAN, "[PERMISSION] preflight | usageAccess=$hasUsageAccess | systemCache=$hasSystemCacheSupport | accessibility=$hasAccessibility")
+
+        _capabilityState.value = CapabilityState(
+            hasUsageAccess = hasUsageAccess,
+            hasSystemCacheSupport = hasSystemCacheSupport,
+            hasAccessibilityEnabled = hasAccessibility,
+            isReady = hasUsageAccess // Ready jika minimal usage access tersedia
+        )
     }
 
     /**
@@ -82,6 +111,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun onAppResumed() {
         val pending = pendingCleaningResult
         Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] onResume | hasPendingResult=${pending != null} | sessionState=${CleanSessionManager.currentState} | sessionActive=${CleanSessionManager.isActive}")
+
+        // Sprint 7: Selalu re-check capabilities saat resume — user mungkin baru grant permission
+        checkCapabilities()
+
         if (pending != null && CleanSessionManager.currentState ==
             CleanSessionManager.SessionState.WAITING_FOR_RESUME) {
             Log.d(Constants.TAG_VIEWMODEL, "ON_RESUME: ada pending result — mulai verifikasi")

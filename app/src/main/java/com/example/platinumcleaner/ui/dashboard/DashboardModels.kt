@@ -71,3 +71,21 @@ sealed class UiState<out T> {
     data class Error(val message: String) : UiState<Nothing>()
     object PermissionRequired : UiState<Nothing>()
 }
+
+/**
+ * CapabilityState — Status kemampuan pembersihan perangkat.
+ *
+ * Sprint 7: Untuk preflight UI sesuai ai_task.md §14.
+ * Ditampilkan sebagai capability readiness card di dashboard.
+ */
+@Immutable
+data class CapabilityState(
+    /** Usage Access permission tersedia — diperlukan untuk scanner. */
+    val hasUsageAccess: Boolean = false,
+    /** ACTION_CLEAR_APP_CACHE tersedia di perangkat ini. */
+    val hasSystemCacheSupport: Boolean = false,
+    /** Accessibility service aktif (opsional, P3). */
+    val hasAccessibilityEnabled: Boolean = false,
+    /** True jika semua kapabilitas minimum tersedia untuk mulai scan. */
+    val isReady: Boolean = false
+)
