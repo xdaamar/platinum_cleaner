@@ -2,6 +2,7 @@ package com.example.platinumcleaner.platform.cleaning
 
 import android.content.Context
 import android.util.Log
+import com.example.platinumcleaner.Constants
 import com.example.platinumcleaner.domain.cleaning.AppCleanResult
 import com.example.platinumcleaner.domain.cleaning.CleaningCapability
 import com.example.platinumcleaner.domain.cleaning.CleaningRequest
@@ -105,12 +106,17 @@ class CleaningOrchestrator(
         pendingResult: CleaningResult
     ): CleaningResult = withContext(Dispatchers.IO) {
         Log.d(tag, "[ORCHESTRATOR] Verifying after resume requestId=${pendingResult.requestId}")
+        Log.d(Constants.TAG_CLEAN, "[VERIFICATION] verifyAfterResume | packages=${pendingResult.appResults.map { it.packageName }}")
 
         val verifiedAppResults = pendingResult.appResults.map { appResult ->
             if (appResult.status != VerificationStatus.PENDING_VERIFICATION) {
+                Log.d(Constants.TAG_CLEAN, "[VERIFICATION] ${appResult.packageName} status=${appResult.status} — skip re-verify")
                 return@map appResult // Sudah ada status — tidak perlu re-verify
             }
 
+            Log.d(Constants.TAG_CLEAN, "[VERIFICATION] ${appResult.packageName} | beforeBytes=${VerificationEngine.formatBytes(appResult.beforeBytes)} | starting staged verify")
+
+            // Sprint 7: Gunakan staged verify (T0→T4), fresh query, bounded 5000ms
             val (afterBytes, status) = VerificationEngine.verify(
                 context = context,
                 packageName = appResult.packageName,
@@ -124,18 +130,28 @@ class CleaningOrchestrator(
                         "after=${VerificationEngine.formatBytes(afterBytes)} " +
                         "result=$status"
             )
+            Log.d(
+                Constants.TAG_CLEAN,
+                "[VERIFICATION] ${appResult.packageName} DONE | " +
+                        "before=${VerificationEngine.formatBytes(appResult.beforeBytes)} | " +
+                        "after=${VerificationEngine.formatBytes(afterBytes)} | " +
+                        "reclaimed=${VerificationEngine.formatBytes(maxOf(0L, appResult.beforeBytes - afterBytes))} | " +
+                        "status=$status"
+            )
 
             appResult.copy(afterBytes = afterBytes, status = status)
         }
 
         // Hitung overall status dari semua app
         val overallStatus = computeOverallStatus(verifiedAppResults)
+        Log.d(Constants.TAG_CLEAN, "[RESULT] verifyAfterResume complete | overallStatus=$overallStatus | totalReclaimed=${VerificationEngine.formatBytes(verifiedAppResults.sumOf { maxOf(0L, it.beforeBytes - it.afterBytes) })}")
 
         pendingResult.copy(
             appResults = verifiedAppResults,
             overallStatus = overallStatus
         )
     }
+
 
     // ===================================================
     // Strategy Selection

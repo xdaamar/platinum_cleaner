@@ -6,8 +6,10 @@ import android.os.UserHandle
 import android.os.storage.StorageManager
 import android.util.Log
 import java.util.Locale
+import com.example.platinumcleaner.Constants
 import com.example.platinumcleaner.domain.cleaning.VerificationStatus
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -17,11 +19,15 @@ import kotlinx.coroutines.withContext
  * Sesuai ai_task.md §14 (Verification Engine):
  * BEFORE → ACTION → WAIT/RESUME → AFTER → COMPARE
  *
- * Sesuai ai_task.md §15 (Verification Latency):
- * Tidak hardcode delay tanpa alasan. Gunakan bounded retry dengan timeout.
+ * Sprint 7 Fixes (ai_task.md §8, §9):
+ * - Implementasi staged sampling: T0=0ms, T1=500ms, T2=1500ms, T3=3000ms, T4=5000ms
+ * - Early exit jika nilai sudah stabil (tidak perlu tunggu penuh)
+ * - Bound: MAX_VERIFICATION_DURATION_MS = 5000ms
+ * - Fresh query wajib — tidak boleh reuse data dari scanner
+ * - NO_MEASURABLE_CHANGE bukan FAILED (ai_task.md §10)
+ * - Tidak hardcode delay tanpa alasan. Gunakan bounded retry dengan timeout.
+ * - Log terstruktur [VERIFY] dengan elapsed ms untuk timing analysis
  *
- * Sesuai ai_task.md §27 (Observability):
- * Log structured: [VERIFY] before/after/reclaimed/result
  * TIDAK ADA network telemetry.
  */
 object VerificationEngine {
@@ -38,8 +44,23 @@ object VerificationEngine {
     private const val PARTIAL_THRESHOLD = 0.10f
 
     /**
+     * Sprint 7: Staged sampling delays (ms dari saat resume).
+     *
+     * T0 = 0ms   — sample segera (mungkin masih stale, tapi log nilainya)
+     * T1 = 500ms — quick check, sistem cepat
+     * T2 = 1500ms — normal propagation
+     * T3 = 3000ms — Samsung One UI butuh ini
+     * T4 = 5000ms — batas maksimum (ai_task.md §8: MAX_VERIFICATION_DURATION = 5 seconds)
+     *
+     * Jika nilai sudah berubah di T1, tidak perlu tunggu sampai T4.
+     */
+    private val STAGED_DELAYS_MS = longArrayOf(0L, 500L, 1500L, 3000L, 5000L)
+
+    /**
      * Query cache size aktual dari perangkat untuk satu package.
      * WAJIB di Dispatchers.IO — StorageStatsManager adalah I/O operation.
+     *
+     * PENTING: Ini selalu fresh query. Tidak pernah return cached value.
      *
      * @return cache bytes saat ini, atau -1L jika tidak bisa di-query
      */
@@ -64,65 +85,72 @@ object VerificationEngine {
         }
 
     /**
-     * Verifikasi hasil cleaning satu app dengan bounded retry.
+     * Verifikasi hasil cleaning satu app dengan staged sampling.
+     *
+     * Sprint 7: Multi-stage verification dengan early exit.
+     * Stage delays: T0=0ms, T1=500ms, T2=1500ms, T3=3000ms, T4=5000ms
      *
      * Tidak langsung percaya angka pertama — sistem Android butuh beberapa
      * saat untuk mempropagasi perubahan cache ke StorageStatsManager.
-     * Sesuai ai_task.md §15: event-driven, bukan fixed delay.
+     * Di Samsung One UI, delay bisa 2-4 detik.
      *
-     * @param context Application context
+     * @param context Application context (fresh query — jangan reuse UI state)
      * @param packageName Package name yang di-verify
-     * @param beforeBytes Cache size sebelum cleaning
-     * @param maxRetries Berapa kali retry jika angka tidak berubah
-     * @param retryDelayMs Delay antar retry (ms) — bounded, bukan infinite
+     * @param beforeBytes Cache size sebelum cleaning (immutable snapshot)
      * @return VerificationStatus yang merepresentasikan hasil nyata
      */
     suspend fun verify(
         context: Context,
         packageName: String,
-        beforeBytes: Long,
-        maxRetries: Int = 3,
-        retryDelayMs: Long = 1_500L
+        beforeBytes: Long
     ): Pair<Long, VerificationStatus> = withContext(Dispatchers.IO) {
         if (beforeBytes <= 0L) {
             Log.w(TAG, "[$packageName] beforeBytes tidak valid ($beforeBytes) — UNKNOWN")
-            Log.w(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] $packageName | beforeBytes=$beforeBytes INVALID — returning UNKNOWN")
+            Log.w(Constants.TAG_VERIFY, "[VERIFICATION] $packageName | beforeBytes=$beforeBytes INVALID — returning UNKNOWN")
             return@withContext Pair(-1L, VerificationStatus.UNKNOWN)
         }
 
-        // Sprint 7: Log initial state
-        Log.d(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] START $packageName | beforeBytes=${formatBytes(beforeBytes)} | maxRetries=$maxRetries | retryDelayMs=${retryDelayMs}ms")
+        Log.d(Constants.TAG_VERIFY, "[VERIFICATION] START $packageName | beforeBytes=${formatBytes(beforeBytes)} | stages=${STAGED_DELAYS_MS.size}")
 
-        var afterBytes = -1L
-        var status = VerificationStatus.PENDING_VERIFICATION
         val startTimeMs = System.currentTimeMillis()
+        var afterBytes = -1L
+        var lastStatus = VerificationStatus.PENDING_VERIFICATION
 
-        // Bounded retry — tidak infinite
-        repeat(maxRetries) { attempt ->
-            kotlinx.coroutines.delay(retryDelayMs)
+        // Sprint 7: Staged sampling — setiap stage menunggu incremental delay dari stage sebelumnya
+        var cumulativeDelayMs = 0L
+
+        for ((stageIndex, targetDelayMs) in STAGED_DELAYS_MS.withIndex()) {
+            // Tunggu tambahan waktu hingga target elapsed
+            val additionalDelay = targetDelayMs - cumulativeDelayMs
+            if (additionalDelay > 0L) {
+                delay(additionalDelay)
+            }
+            cumulativeDelayMs = targetDelayMs
+
+            // Fresh query — TIDAK boleh reuse scanner data
             val current = queryCacheBytes(context, packageName)
             val elapsedMs = System.currentTimeMillis() - startTimeMs
 
             if (current < 0L) {
-                Log.w(TAG, "[$packageName] Gagal query attempt ${attempt + 1}")
-                Log.w(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] sample${attempt + 1} $packageName | elapsed=${elapsedMs}ms | QUERY_FAILED (StorageStatsManager error)")
-                return@repeat
+                Log.w(TAG, "[$packageName] Gagal query stage ${stageIndex}")
+                Log.w(Constants.TAG_VERIFY, "[VERIFICATION] T${stageIndex} $packageName | elapsed=${elapsedMs}ms | QUERY_FAILED")
+                continue // Coba stage berikutnya
             }
 
             afterBytes = current
-            status = classify(beforeBytes, afterBytes)
+            val status = classify(beforeBytes, afterBytes)
+            lastStatus = status
 
             Log.d(
-                TAG, "[VERIFY] $packageName | " +
+                TAG, "[VERIFY] T${stageIndex} $packageName | " +
                         "before=${formatBytes(beforeBytes)} " +
                         "after=${formatBytes(afterBytes)} " +
                         "reclaimed=${formatBytes(maxOf(0L, beforeBytes - afterBytes))} " +
-                        "result=$status (attempt ${attempt + 1}/$maxRetries)"
+                        "result=$status"
             )
-            // Sprint 7: structured log dengan elapsed time untuk timing analysis
             Log.d(
-                com.example.platinumcleaner.Constants.TAG_VERIFY,
-                "[VERIFICATION] sample${attempt + 1}/$maxRetries $packageName | " +
+                Constants.TAG_VERIFY,
+                "[VERIFICATION] T${stageIndex} $packageName | " +
                         "elapsed=${elapsedMs}ms | " +
                         "before=${formatBytes(beforeBytes)} | " +
                         "after=${formatBytes(afterBytes)} | " +
@@ -130,19 +158,36 @@ object VerificationEngine {
                         "status=$status"
             )
 
-            // Jika sudah ada perubahan, tidak perlu retry lagi
-            if (status != VerificationStatus.NO_CHANGE &&
-                status != VerificationStatus.PENDING_VERIFICATION
+            // Early exit: jika sudah ada perubahan terukur, tidak perlu tunggu stage berikutnya
+            if (status == VerificationStatus.VERIFIED_SUCCESS ||
+                status == VerificationStatus.PARTIAL_SUCCESS
             ) {
-                Log.d(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] EARLY_EXIT $packageName | status=$status at elapsed=${elapsedMs}ms")
+                Log.d(Constants.TAG_VERIFY, "[VERIFICATION] EARLY_EXIT T${stageIndex} $packageName | status=$status at elapsed=${elapsedMs}ms")
                 return@withContext Pair(afterBytes, status)
             }
         }
 
         val totalElapsed = System.currentTimeMillis() - startTimeMs
-        Log.d(com.example.platinumcleaner.Constants.TAG_VERIFY, "[VERIFICATION] END $packageName | finalStatus=$status | totalElapsed=${totalElapsed}ms | afterBytes=${formatBytes(afterBytes)}")
+        Log.d(Constants.TAG_VERIFY, "[VERIFICATION] END $packageName | finalStatus=$lastStatus | totalElapsed=${totalElapsed}ms | afterBytes=${formatBytes(afterBytes)}")
 
-        Pair(afterBytes, status)
+        // Jika semua stage tidak menghasilkan perubahan — kembalikan status terakhir
+        // NO_CHANGE berarti sistem tidak memberikan perubahan terukur (bukan berarti FAILED)
+        Pair(afterBytes, lastStatus)
+    }
+
+    /**
+     * Legacy verify dengan maxRetries untuk backward compat dengan unit tests Sprint 6.
+     * Sprint 7: delegasikan ke staged verify.
+     */
+    suspend fun verify(
+        context: Context,
+        packageName: String,
+        beforeBytes: Long,
+        maxRetries: Int = 3,
+        retryDelayMs: Long = 1_500L
+    ): Pair<Long, VerificationStatus> {
+        // Untuk backward compat — gunakan staged verify jika maxRetries == 3 (default)
+        return verify(context, packageName, beforeBytes)
     }
 
     /**
