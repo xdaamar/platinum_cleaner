@@ -3,27 +3,65 @@ package com.example.platinumcleaner.domain.cleaning
 /**
  * VerificationStatus — Hasil verifikasi aktual setelah cleaning.
  *
- * Sesuai ai_task.md §14: Jangan hanya Boolean success.
- * UI harus menampilkan status yang jujur.
+ * Sprint 7: Expanded states sesuai ai_task.md §6.
+ * Setiap state memiliki makna spesifik dan UI message yang berbeda.
+ * Tidak ada collapse ke generic "FAILED".
+ *
+ * UI harus menampilkan status yang jujur — tidak memanipulasi user.
  */
 enum class VerificationStatus {
-    /** Cache terbukti berkurang signifikan (> threshold minimum). */
-    VERIFIED_SUCCESS,
+    // ===== Execution States =====
 
-    /** Cache berkurang tapi tidak sebanyak yang diperkirakan. */
-    PARTIAL_SUCCESS,
+    /** Intent tidak tersedia di perangkat ini (resolveActivity == null). */
+    INTENT_UNAVAILABLE,
 
-    /** Cache tidak berubah sama sekali — mungkin sudah bersih sebelumnya. */
-    NO_CHANGE,
+    /** startActivity() gagal (ActivityNotFoundException / SecurityException / crash). */
+    INTENT_LAUNCH_FAILED,
 
-    /** Proses gagal sebelum cleaning bisa dieksekusi. */
-    FAILED,
+    /** Intent berhasil diluncurkan, menunggu sistem Android memproses. */
+    WAITING_FOR_SYSTEM_ACTION,
+
+    // ===== Verification States =====
 
     /** Cleaning sudah dieksekusi tapi belum bisa diverifikasi (menunggu resume). */
     PENDING_VERIFICATION,
 
+    /** Verifikasi berjalan (staged sampling sedang berlangsung). */
+    VERIFYING,
+
+    /** Verifikasi timeout — sistem tidak memberikan hasil dalam waktu yang ditetapkan. */
+    VERIFICATION_TIMEOUT,
+
+    // ===== Result States =====
+
+    /** Cache terbukti berkurang signifikan (>= 90% threshold). */
+    VERIFIED_SUCCESS,
+
+    /** Cache berkurang tapi tidak sebanyak yang diperkirakan (10-89%). */
+    VERIFIED_PARTIAL,
+
+    /** Cache tidak berubah sama sekali — BUKAN berarti gagal, mungkin sudah bersih. */
+    NO_MEASURABLE_CHANGE,
+
+    /** User menekan Back / membatalkan system UI — tidak ada pembersihan yang terjadi. */
+    USER_CANCELLED,
+
+    // ===== Legacy / Compat States =====
+
+    /** Cache tidak berubah sama sekali (alias NO_MEASURABLE_CHANGE untuk backward compat). */
+    NO_CHANGE,
+
+    /** Proses gagal sebelum cleaning bisa dieksekusi (execution error). */
+    FAILED,
+
+    /** Tidak ada cleaning capability yang tersedia di perangkat ini. */
+    UNSUPPORTED,
+
     /** Tidak bisa membandingkan — data before/after tidak tersedia. */
-    UNKNOWN
+    UNKNOWN,
+
+    /** Cache berkurang sebagian (alias VERIFIED_PARTIAL untuk backward compat). */
+    PARTIAL_SUCCESS,
 }
 
 /**

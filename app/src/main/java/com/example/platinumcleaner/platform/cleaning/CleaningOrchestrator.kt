@@ -225,21 +225,25 @@ class CleaningOrchestrator(
     private fun computeOverallStatus(results: List<AppCleanResult>): VerificationStatus {
         if (results.isEmpty()) return VerificationStatus.UNKNOWN
 
-        val hasSuccess = results.any {
-            it.status == VerificationStatus.VERIFIED_SUCCESS ||
-                    it.status == VerificationStatus.PARTIAL_SUCCESS
-        }
-        val allFailed = results.all { it.status == VerificationStatus.FAILED }
-        val allNoChange = results.all { it.status == VerificationStatus.NO_CHANGE }
+        val hasVerifiedSuccess = results.any { it.status == VerificationStatus.VERIFIED_SUCCESS }
+        val hasVerifiedPartial = results.any { it.status == VerificationStatus.VERIFIED_PARTIAL }
+        val hasLegacySuccess = results.any { it.status == VerificationStatus.PARTIAL_SUCCESS } // backward compat
+        val allFailed = results.all { it.status == VerificationStatus.FAILED || it.status == VerificationStatus.INTENT_LAUNCH_FAILED }
+        val allNoChange = results.all { it.status == VerificationStatus.NO_CHANGE || it.status == VerificationStatus.NO_MEASURABLE_CHANGE }
+        val allCancelled = results.all { it.status == VerificationStatus.USER_CANCELLED }
         val hasPending = results.any { it.status == VerificationStatus.PENDING_VERIFICATION }
+        val allTimeout = results.all { it.status == VerificationStatus.VERIFICATION_TIMEOUT }
 
         return when {
             hasPending -> VerificationStatus.PENDING_VERIFICATION
+            allCancelled -> VerificationStatus.USER_CANCELLED
+            allTimeout -> VerificationStatus.VERIFICATION_TIMEOUT
             allFailed -> VerificationStatus.FAILED
-            allNoChange -> VerificationStatus.NO_CHANGE
-            hasSuccess -> if (results.all {
-                    it.status == VerificationStatus.VERIFIED_SUCCESS
-                }) VerificationStatus.VERIFIED_SUCCESS else VerificationStatus.PARTIAL_SUCCESS
+            allNoChange -> VerificationStatus.NO_MEASURABLE_CHANGE
+            hasVerifiedSuccess && !hasVerifiedPartial && !hasLegacySuccess ->
+                VerificationStatus.VERIFIED_SUCCESS
+            hasVerifiedSuccess || hasVerifiedPartial || hasLegacySuccess ->
+                VerificationStatus.VERIFIED_PARTIAL
             else -> VerificationStatus.UNKNOWN
         }
     }

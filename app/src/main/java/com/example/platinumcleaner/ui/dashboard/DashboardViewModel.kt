@@ -256,13 +256,49 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         val reclaimedText = VerificationEngine.formatReclaimedVerified(totalReclaimed)
         val isAnySuccess = result.successCount > 0
 
+        // Sprint 7: Pesan jujur per state (ai_task.md §17)
+        // Tidak ada generic "Pembersihan gagal" — setiap state punya penjelasan spesifik
         val snackbar = when (result.overallStatus) {
-            VerificationStatus.VERIFIED_SUCCESS -> "✓ $reclaimedText"
-            VerificationStatus.PARTIAL_SUCCESS -> "Sebagian berhasil — $reclaimedText"
-            VerificationStatus.NO_CHANGE -> "Cache sudah bersih atau tidak berubah"
-            VerificationStatus.FAILED -> toHumanErrorMessage(result)
-            VerificationStatus.UNKNOWN -> "Hasil tidak dapat diverifikasi"
-            VerificationStatus.PENDING_VERIFICATION -> null
+            VerificationStatus.VERIFIED_SUCCESS ->
+                "✓ Pembersihan selesai — $reclaimedText"
+
+            VerificationStatus.VERIFIED_PARTIAL ->
+                "Pembersihan sebagian selesai — $reclaimedText. Beberapa data mungkin masih digunakan sistem."
+
+            VerificationStatus.PARTIAL_SUCCESS ->
+                "Sebagian berhasil — $reclaimedText" // backward compat
+
+            VerificationStatus.NO_MEASURABLE_CHANGE ->
+                "Permintaan pembersihan berhasil dikirim ke Android, tetapi tidak ada pengurangan cache yang dapat diukur. Ini tidak selalu berarti gagal."
+
+            VerificationStatus.NO_CHANGE ->
+                "Cache sudah bersih atau tidak berubah" // backward compat
+
+            VerificationStatus.USER_CANCELLED ->
+                "Pembersihan dibatalkan. Tidak ada perubahan yang dilakukan oleh Platinum Cleaner."
+
+            VerificationStatus.INTENT_LAUNCH_FAILED ->
+                "Android tidak dapat membuka fitur pembersihan cache pada perangkat ini."
+
+            VerificationStatus.INTENT_UNAVAILABLE ->
+                "Fitur pembersihan sistem tidak tersedia di perangkat ini. Gunakan pembersihan manual."
+
+            VerificationStatus.VERIFICATION_TIMEOUT ->
+                "Android belum memberikan hasil yang dapat diverifikasi. Silakan coba lagi atau gunakan pembersihan manual."
+
+            VerificationStatus.WAITING_FOR_SYSTEM_ACTION ->
+                "Android sedang memproses pembersihan cache. Tunggu sebentar..."
+
+            VerificationStatus.UNSUPPORTED ->
+                "Perangkat ini tidak mendukung pembersihan cache otomatis."
+
+            VerificationStatus.FAILED ->
+                "Pembersihan gagal dieksekusi. Silakan hapus cache secara manual melalui Pengaturan."
+
+            VerificationStatus.UNKNOWN ->
+                "Hasil tidak dapat diverifikasi."
+
+            VerificationStatus.VERIFYING, VerificationStatus.PENDING_VERIFICATION -> null
         }
 
         Log.d(
@@ -271,6 +307,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     "reclaimed=${VerificationEngine.formatBytes(totalReclaimed)} " +
                     "success=${result.successCount} fail=${result.failedCount}"
         )
+        Log.d(Constants.TAG_CLEAN, "[RESULT] final | overallStatus=${result.overallStatus} | reclaimed=${VerificationEngine.formatBytes(totalReclaimed)} | snackbar=${snackbar?.take(60)}")
 
         viewModelScope.launch {
             _metricState.value = _metricState.value.copy(
@@ -295,19 +332,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun toHumanErrorMessage(result: CleaningResult): String {
-        val firstError = result.appResults.firstOrNull()?.errorMessage
-        return when {
-            firstError?.contains("cancelled", ignoreCase = true) == true ->
-                "Dibatalkan."
-            firstError?.contains("not found", ignoreCase = true) == true ->
-                "Tidak dapat menemukan tombol hapus cache. Coba hapus manual."
-            result.selectedCapability.name.contains("ACCESSIBILITY") ->
-                "Navigasi otomatis gagal. Coba hapus cache manual."
-            else ->
-                "Pembersihan gagal. Silakan hapus cache secara manual."
-        }
-    }
 
     // ===================================================
     // Backward Compat: ServiceEventBus (untuk Accessibility path)
