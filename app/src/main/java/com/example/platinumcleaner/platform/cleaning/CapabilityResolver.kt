@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.storage.StorageManager
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityManager
@@ -88,10 +89,18 @@ object CapabilityResolver {
      * - Verification tetap wajib setelah eksekusi
      */
     fun isSystemWideCacheAvailable(context: Context): Boolean {
+        // Sprint 7 FIX: StorageManager.ACTION_CLEAR_APP_CACHE hanya tersedia di API 28+
+        // Di bawah API 28, intent ini tidak ada dan tidak boleh dicoba
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            Log.d(Constants.TAG_CLEAN, "[CAPABILITY] ACTION_CLEAR_APP_CACHE NOT AVAILABLE | apiLevel=${Build.VERSION.SDK_INT} < 28 (Pie)")
+            Log.d(TAG, "ACTION_CLEAR_APP_CACHE: API level ${Build.VERSION.SDK_INT} < 28, tidak tersedia")
+            return false
+        }
+
         return try {
-            // Sprint 7: Diagnosa — log exact action string dan API level
-            val actionString = "android.intent.action.CLEAR_APP_CACHE"
-            Log.d(com.example.platinumcleaner.Constants.TAG_CLEAN, "[CAPABILITY] Checking ACTION_CLEAR_APP_CACHE | action=\"$actionString\" | apiLevel=${android.os.Build.VERSION.SDK_INT} | device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            // Sprint 7 FIX: Gunakan StorageManager.ACTION_CLEAR_APP_CACHE, bukan hardcoded string
+            val actionString = StorageManager.ACTION_CLEAR_APP_CACHE
+            Log.d(Constants.TAG_CLEAN, "[CAPABILITY] Checking ACTION_CLEAR_APP_CACHE | action=\"$actionString\" | apiLevel=${Build.VERSION.SDK_INT} | device=${Build.MANUFACTURER} ${Build.MODEL}")
 
             val intent = Intent(actionString).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -104,11 +113,11 @@ object CapabilityResolver {
             val isAvailable = resolveInfo != null
             val resolveDetail = resolveInfo?.activityInfo?.let { "${it.packageName}/${it.name}" } ?: "null"
             Log.d(TAG, "ACTION_CLEAR_APP_CACHE resolvable: $isAvailable")
-            Log.d(com.example.platinumcleaner.Constants.TAG_CLEAN, "[CAPABILITY] ACTION_CLEAR_APP_CACHE resolvable=$isAvailable resolvedActivity=$resolveDetail")
+            Log.d(Constants.TAG_CLEAN, "[CAPABILITY] ACTION_CLEAR_APP_CACHE resolvable=$isAvailable resolvedActivity=$resolveDetail")
             isAvailable
         } catch (e: Exception) {
             Log.w(TAG, "Error cek system cache capability: ${e.message}")
-            Log.w(com.example.platinumcleaner.Constants.TAG_CLEAN, "[CAPABILITY] Error checking ACTION_CLEAR_APP_CACHE: ${e.javaClass.simpleName}: ${e.message}")
+            Log.w(Constants.TAG_CLEAN, "[CAPABILITY] Error checking ACTION_CLEAR_APP_CACHE: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
