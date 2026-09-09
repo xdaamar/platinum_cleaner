@@ -191,20 +191,127 @@ object VerificationEngine {
     }
 
     /**
-     * Mengklasifikasikan hasil berdasarkan perbandingan before/after.
+     * V8 (§20, §21, §38, §39): Query total aggregate cache size dari semua package di perangkat.
+     */
+    suspend fun queryAggregateCacheBytes(context: Context): Long = withContext(Dispatchers.IO) {
+        try {
+            val storageStatsManager =
+                context.getSystemService(Context.STORAGE_STATS_SERVICE) as? StorageStatsManager
+                    ?: return@withContext -1L
+            val packageManager = context.packageManager
+            @Suppress("DEPRECATION")
+            val packages = packageManager.getInstalledPackages(0)
+            var total = 0L
+            for (pkg in packages) {
+                try {
+                    val uid = pkg.applicationInfo?.uid ?: continue
+                    val stats = storageStatsManager.queryStatsForPackage(
+                        StorageManager.UUID_DEFAULT,
+                        pkg.packageName,
+                        UserHandle.getUserHandleForUid(uid)
+                    )
+                    if (stats.cacheBytes > 0L) {
+                        total += stats.cacheBytes
+                    }
+                } catch (e: Exception) {
+                    // Abaikan kegagalan query per-package individual
+                }
+            }
+            total
+        } catch (e: Exception) {
+            Log.w(TAG, "Gagal query aggregate cache: ${e.message}")
+            -1L
+        }
+    }
+
+    /**
+     * V8 (§20, §21, §38, §39): Verifikasi pembersihan tingkat sistem (aggregate footprint).
+     * Menggunakan staged sampling (T0→T4) dengan batas maksimum 5000ms.
+     */
+    suspend fun verifySystemWide(
+        context: Context,
+        beforeTotalBytes: Long
+    ): Pair<Long, VerificationStatus> = withContext(Dispatchers.IO) {
+        if (beforeTotalBytes <= 0L) {
+            Log.w(Constants.TAG_VERIFY, "[VERIFICATION] SYSTEM_WIDE | beforeTotalBytes invalid ($beforeTotalBytes) — UNKNOWN")
+            return@withContext Pair(-1L, VerificationStatus.UNKNOWN)
+        }
+
+        Log.d(Constants.TAG_VERIFY, "[VERIFICATION] START SYSTEM_WIDE | beforeBytes=${formatBytes(beforeTotalBytes)} | stages=${STAGED_DELAYS_MS.size}")
+        val startTimeMs = System.currentTimeMillis()
+        var afterTotalBytes = -1L
+        var lastStatus = VerificationStatus.NO_MEASURABLE_CHANGE
+
+        var cumulativeDelayMs = 0L
+        for ((stageIndex, targetDelayMs) in STAGED_DELAYS_MS.withIndex()) {
+            val additionalDelay = targetDelayMs - cumulativeDelayMs
+            if (additionalDelay > 0L) {
+                delay(additionalDelay)
+            }
+            cumulativeDelayMs = targetDelayMs
+
+            val current = queryAggregateCacheBytes(context)
+            val elapsedMs = System.currentTimeMillis() - startTimeMs
+
+            if (current < 0L) {
+                Log.w(Constants.TAG_VERIFY, "[VERIFICATION] T$stageIndex SYSTEM_WIDE | elapsed=${elapsedMs}ms | QUERY_FAILED")
+                continue
+            }
+
+            afterTotalBytes = current
+            val status = classifySystemWide(beforeTotalBytes, afterTotalBytes)
+            lastStatus = status
+
+            Log.d(
+                Constants.TAG_VERIFY,
+                "[VERIFICATION] T$stageIndex SYSTEM_WIDE | elapsed=${elapsedMs}ms | " +
+                        "before=${formatBytes(beforeTotalBytes)} | " +
+                        "after=${formatBytes(afterTotalBytes)} | " +
+                        "reclaimed=${formatBytes(maxOf(0L, beforeTotalBytes - afterTotalBytes))} | " +
+                        "status=$status"
+            )
+
+            if (status == VerificationStatus.VERIFIED_SUCCESS ||
+                status == VerificationStatus.VERIFIED_PARTIAL
+            ) {
+                Log.d(Constants.TAG_VERIFY, "[VERIFICATION] EARLY_EXIT T$stageIndex SYSTEM_WIDE | status=$status at elapsed=${elapsedMs}ms")
+                return@withContext Pair(afterTotalBytes, status)
+            }
+        }
+
+        val totalElapsed = System.currentTimeMillis() - startTimeMs
+        Log.d(Constants.TAG_VERIFY, "[VERIFICATION] END SYSTEM_WIDE | finalStatus=$lastStatus | elapsed=${totalElapsed}ms")
+        Pair(afterTotalBytes, lastStatus)
+    }
+
+    /**
+     * V8 (§20, §21, §38, §39): Klasifikasi hasil aggregate pembersihan sistem.
+     */
+    fun classifySystemWide(beforeTotalBytes: Long, afterTotalBytes: Long): VerificationStatus {
+        if (beforeTotalBytes <= 0L || afterTotalBytes < 0L) return VerificationStatus.UNKNOWN
+        val reduction = beforeTotalBytes - afterTotalBytes
+        return when {
+            reduction >= (beforeTotalBytes * SUCCESS_THRESHOLD).toLong() -> VerificationStatus.VERIFIED_SUCCESS
+            reduction > 0L -> VerificationStatus.VERIFIED_PARTIAL
+            else -> VerificationStatus.NO_MEASURABLE_CHANGE
+        }
+    }
+
+    /**
+     * Mengklasifikasikan hasil berdasarkan perbandingan before/after per package.
      */
     fun classify(beforeBytes: Long, afterBytes: Long): VerificationStatus {
         if (afterBytes < 0L) return VerificationStatus.UNKNOWN
         if (beforeBytes <= 0L) return VerificationStatus.UNKNOWN
 
         val reduction = beforeBytes - afterBytes
-        if (reduction <= 0L) return VerificationStatus.NO_CHANGE
+        if (reduction <= 0L) return VerificationStatus.NO_MEASURABLE_CHANGE
 
         val ratio = reduction.toFloat() / beforeBytes.toFloat()
         return when {
             ratio >= SUCCESS_THRESHOLD -> VerificationStatus.VERIFIED_SUCCESS
-            ratio >= PARTIAL_THRESHOLD -> VerificationStatus.PARTIAL_SUCCESS
-            else -> VerificationStatus.NO_CHANGE
+            ratio >= PARTIAL_THRESHOLD -> VerificationStatus.VERIFIED_PARTIAL
+            else -> VerificationStatus.NO_MEASURABLE_CHANGE
         }
     }
 

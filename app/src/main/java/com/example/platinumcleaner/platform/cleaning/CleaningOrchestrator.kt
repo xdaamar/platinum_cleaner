@@ -132,38 +132,60 @@ class CleaningOrchestrator(
         Log.d(tag, "[ORCHESTRATOR] Verifying after resume requestId=${pendingResult.requestId}")
         Log.d(Constants.TAG_CLEAN, "[VERIFICATION] verifyAfterResume | packages=${pendingResult.appResults.map { it.packageName }}")
 
-        val verifiedAppResults = pendingResult.appResults.map { appResult ->
-            if (appResult.status != VerificationStatus.PENDING_VERIFICATION) {
-                Log.d(Constants.TAG_CLEAN, "[VERIFICATION] ${appResult.packageName} status=${appResult.status} — skip re-verify")
-                return@map appResult // Sudah ada status — tidak perlu re-verify
-            }
+        val isSystemWide = pendingResult.selectedCapability == CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST ||
+                pendingResult.appResults.any { it.packageName == SystemCacheStrategy.SYSTEM_TARGET_PACKAGE }
 
-            Log.d(Constants.TAG_CLEAN, "[VERIFICATION] ${appResult.packageName} | beforeBytes=${VerificationEngine.formatBytes(appResult.beforeBytes)} | starting staged verify")
-
-            // Sprint 7: Gunakan staged verify (T0→T4), fresh query, bounded 5000ms
-            val (afterBytes, status) = VerificationEngine.verify(
+        val verifiedAppResults = if (isSystemWide) {
+            val systemAppResult = pendingResult.appResults.firstOrNull() ?: AppCleanResult(
+                packageName = SystemCacheStrategy.SYSTEM_TARGET_PACKAGE,
+                appName = "Penyimpanan Sistem Android",
+                beforeBytes = 0L,
+                afterBytes = -1L,
+                status = VerificationStatus.NO_MEASURABLE_CHANGE,
+                usedCapability = CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST
+            )
+            Log.d(Constants.TAG_CLEAN, "[VERIFICATION] System-wide aggregate verification starting | beforeBytes=${systemAppResult.beforeBytes}")
+            val (afterBytes, status) = VerificationEngine.verifySystemWide(
                 context = context,
-                packageName = appResult.packageName,
-                beforeBytes = appResult.beforeBytes
+                beforeTotalBytes = systemAppResult.beforeBytes
             )
+            listOf(systemAppResult.copy(afterBytes = afterBytes, status = status))
+        } else {
+            pendingResult.appResults.map { appResult ->
+                if (appResult.status != VerificationStatus.PENDING_VERIFICATION &&
+                    appResult.status != VerificationStatus.WAITING_FOR_SYSTEM_ACTION
+                ) {
+                    Log.d(Constants.TAG_CLEAN, "[VERIFICATION] ${appResult.packageName} status=${appResult.status} — skip re-verify")
+                    return@map appResult // Sudah ada status — tidak perlu re-verify
+                }
 
-            Log.d(
-                tag,
-                "[VERIFY] ${appResult.packageName} | " +
-                        "before=${VerificationEngine.formatBytes(appResult.beforeBytes)} " +
-                        "after=${VerificationEngine.formatBytes(afterBytes)} " +
-                        "result=$status"
-            )
-            Log.d(
-                Constants.TAG_CLEAN,
-                "[VERIFICATION] ${appResult.packageName} DONE | " +
-                        "before=${VerificationEngine.formatBytes(appResult.beforeBytes)} | " +
-                        "after=${VerificationEngine.formatBytes(afterBytes)} | " +
-                        "reclaimed=${VerificationEngine.formatBytes(maxOf(0L, appResult.beforeBytes - afterBytes))} | " +
-                        "status=$status"
-            )
+                Log.d(Constants.TAG_CLEAN, "[VERIFICATION] ${appResult.packageName} | beforeBytes=${VerificationEngine.formatBytes(appResult.beforeBytes)} | starting staged verify")
 
-            appResult.copy(afterBytes = afterBytes, status = status)
+                // Sprint 7: Gunakan staged verify (T0→T4), fresh query, bounded 5000ms
+                val (afterBytes, status) = VerificationEngine.verify(
+                    context = context,
+                    packageName = appResult.packageName,
+                    beforeBytes = appResult.beforeBytes
+                )
+
+                Log.d(
+                    tag,
+                    "[VERIFY] ${appResult.packageName} | " +
+                            "before=${VerificationEngine.formatBytes(appResult.beforeBytes)} " +
+                            "after=${VerificationEngine.formatBytes(afterBytes)} " +
+                            "result=$status"
+                )
+                Log.d(
+                    Constants.TAG_CLEAN,
+                    "[VERIFICATION] ${appResult.packageName} DONE | " +
+                            "before=${VerificationEngine.formatBytes(appResult.beforeBytes)} | " +
+                            "after=${VerificationEngine.formatBytes(afterBytes)} | " +
+                            "reclaimed=${VerificationEngine.formatBytes(maxOf(0L, appResult.beforeBytes - afterBytes))} | " +
+                            "status=$status"
+                )
+
+                appResult.copy(afterBytes = afterBytes, status = status)
+            }
         }
 
         // Hitung overall status dari semua app
@@ -266,7 +288,10 @@ class CleaningOrchestrator(
         val allFailed = results.all { it.status == VerificationStatus.FAILED || it.status == VerificationStatus.INTENT_LAUNCH_FAILED }
         val allNoChange = results.all { it.status == VerificationStatus.NO_CHANGE || it.status == VerificationStatus.NO_MEASURABLE_CHANGE }
         val allCancelled = results.all { it.status == VerificationStatus.USER_CANCELLED }
-        val hasPending = results.any { it.status == VerificationStatus.PENDING_VERIFICATION }
+        val hasPending = results.any {
+            it.status == VerificationStatus.PENDING_VERIFICATION ||
+                    it.status == VerificationStatus.WAITING_FOR_SYSTEM_ACTION
+        }
         val allTimeout = results.all { it.status == VerificationStatus.VERIFICATION_TIMEOUT }
 
         return when {

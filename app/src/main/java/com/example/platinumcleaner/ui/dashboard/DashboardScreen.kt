@@ -74,6 +74,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.platinumcleaner.Constants
+import com.example.platinumcleaner.domain.cleaning.CleaningCapability
 import com.example.platinumcleaner.R
 import com.example.platinumcleaner.ui.theme.Dimens
 import com.example.platinumcleaner.ui.theme.PlatinumBackground
@@ -224,7 +225,13 @@ fun DashboardScreen(
             }
 
             if (metricState.isCleaning) {
-                item { CleaningStatusBanner(targetPackage = metricState.cleaningTarget) }
+                item {
+                    CleaningStatusBanner(
+                        targetPackage = metricState.cleaningTarget,
+                        appName = metricState.currentCleanAppName,
+                        isSystemWide = metricState.activeStrategy == CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST
+                    )
+                }
             }
 
             when (val state = appsState) {
@@ -455,7 +462,12 @@ private fun TutorialStep(step: Int, text: String) {
 // ===================================================
 
 @Composable
-fun CleaningStatusBanner(targetPackage: String?, modifier: Modifier = Modifier) {
+fun CleaningStatusBanner(
+    targetPackage: String?,
+    appName: String? = null,
+    isSystemWide: Boolean = false,
+    modifier: Modifier = Modifier
+) {
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(Dimens.RadiusMD),
@@ -478,14 +490,19 @@ fun CleaningStatusBanner(targetPackage: String?, modifier: Modifier = Modifier) 
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Membersihkan cache...",
+                    text = if (isSystemWide) "Pembersihan Sistem Android" else "Membersihkan cache...",
                     style = MaterialTheme.typography.labelLarge,
                     color = PlatinumOnSurface,
                     fontWeight = FontWeight.Medium
                 )
-                if (targetPackage != null) {
+                val subtitle = if (isSystemWide) {
+                    "Menunggu tindakan pembersihan dari sistem Android..."
+                } else {
+                    appName ?: targetPackage
+                }
+                if (subtitle != null) {
                     Text(
-                        text = targetPackage,
+                        text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = PlatinumOnSurfaceVariant,
                         maxLines = 1,

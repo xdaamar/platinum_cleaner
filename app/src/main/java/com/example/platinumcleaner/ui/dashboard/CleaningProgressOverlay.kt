@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,13 +16,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.platinumcleaner.domain.cleaning.CleaningCapability
 import com.example.platinumcleaner.ui.theme.Dimens
 import com.example.platinumcleaner.ui.theme.PlatinumAccent
 import com.example.platinumcleaner.ui.theme.PlatinumOnSurface
@@ -41,18 +43,18 @@ import com.example.platinumcleaner.ui.theme.PlatinumOutlineVariant
 import com.example.platinumcleaner.ui.theme.PlatinumSurface
 
 /**
- * CleaningProgressOverlay — Real-Time Progress UI (Sprint 5).
+ * CleaningProgressOverlay — Real-Time Progress UI (Sprint V8 Realigned).
  *
- * Posisi: Kiri bawah layar (Alignment.BottomStart).
- * Hanya tampil saat `isCleaning == true`.
+ * Sesuai ai_task.md §18, §19, §59:
+ * - Mode System-Wide: Menampilkan "Penyimpanan Sistem Android", tanpa counter "1 / 5" fiktif
+ * - Mode Per-App: Menampilkan kemajuan nyata "X / Y" dan nama aplikasi target
+ * - Tombol Batal: Memberikan kontrol penuh kepada pengguna untuk membatalkan sesi
  *
  * Desain "Quiet Luxury":
  * - Surface putih/abu muda dengan shadow tipis
  * - Lebar 65% layar (tidak full width)
  * - AnimatedVisibility: slideInVertically / slideOutVertically (60fps GPU-friendly)
  * - LinearProgressIndicator tipis 3dp
- *
- * Sesuai 01_design_rules.md: 8pt grid, PlatinumSurface, smooth transitions.
  */
 @Composable
 fun CleaningProgressOverlay(
@@ -62,6 +64,7 @@ fun CleaningProgressOverlay(
     val metricState by viewModel.metricState.collectAsState()
     val isVisible = metricState.isCleaning
 
+    val isSystemWide = metricState.activeStrategy == CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST
     val currentIndex = metricState.currentCleanIndex
     val totalApps = metricState.totalCleanApps
     val appName = metricState.currentCleanAppName ?: metricState.cleaningTarget ?: "..."
@@ -88,7 +91,7 @@ fun CleaningProgressOverlay(
             )
         ) {
             Surface(
-                modifier = Modifier.fillMaxWidth(0.65f),
+                modifier = Modifier.fillMaxWidth(0.68f),
                 shape = RoundedCornerShape(16.dp),
                 color = PlatinumSurface,
                 shadowElevation = 4.dp
@@ -96,57 +99,103 @@ fun CleaningProgressOverlay(
                 Column(
                     modifier = Modifier.padding(Dimens.SpacingMD)
                 ) {
-                    // Header row: label + pulse dot
+                    // Header row: label + pulse dot + cancel action
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(PlatinumAccent)
-                        )
-                        Text(
-                            text = "Membersihkan Cache...",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = PlatinumOnSurfaceVariant,
-                            fontSize = 10.sp
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(PlatinumAccent)
+                            )
+                            Text(
+                                text = if (isSystemWide) "Penyimpanan Sistem" else "Membersihkan Cache...",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = PlatinumOnSurfaceVariant,
+                                fontSize = 10.sp
+                            )
+                        }
+
+                        // Tombol Batal
+                        TextButton(
+                            onClick = { viewModel.cancelCleaning() },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                            modifier = Modifier.height(20.dp)
+                        ) {
+                            Text(
+                                text = "Batal",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = PlatinumOnSurfaceVariant,
+                                fontSize = 10.sp
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(Dimens.SpacingXXS))
 
-                    // Progress text: "X / Y"
-                    Text(
-                        text = if (totalApps > 0) "$currentIndex / $totalApps" else "—",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = PlatinumOnSurface,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    // App name
-                    Text(
-                        text = appName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = PlatinumOnSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    // Mode-dependent content
+                    if (isSystemWide) {
+                        Text(
+                            text = "Pembersihan Sistem",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = PlatinumOnSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Menunggu tindakan sistem...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = PlatinumOnSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    } else {
+                        // Progress text: "X / Y" or "1 Aplikasi"
+                        Text(
+                            text = if (totalApps > 1) "$currentIndex / $totalApps" else "Pembersihan Terarah",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = PlatinumOnSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = appName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = PlatinumOnSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(Dimens.SpacingXS))
 
-                    // LinearProgressIndicator tipis 3dp (Material3 API < 1.2 compatible)
-                    @Suppress("DEPRECATION")
-                    LinearProgressIndicator(
-                        progress = progress,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp)
-                            .clip(RoundedCornerShape(2.dp)),
-                        color = PlatinumOnSurface,
-                        trackColor = PlatinumOutlineVariant
-                    )
+                    // LinearProgressIndicator tipis 3dp
+                    if (isSystemWide) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = PlatinumOnSurface,
+                            trackColor = PlatinumOutlineVariant
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        LinearProgressIndicator(
+                            progress = progress,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = PlatinumOnSurface,
+                            trackColor = PlatinumOutlineVariant
+                        )
+                    }
                 }
             }
         }
