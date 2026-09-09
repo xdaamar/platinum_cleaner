@@ -48,6 +48,12 @@ enum class DashboardNavTab(
     SETTINGS(R.string.nav_settings, R.drawable.ic_nav_settings)
 }
 
+enum class ScanMeasurementStatus {
+    MEASURED,
+    UNAVAILABLE,
+    ERROR
+}
+
 // Real data models for Sprint 2 & V8 inventory realignment
 @Immutable
 data class AppInfo(
@@ -57,7 +63,8 @@ data class AppInfo(
     val isSystemApp: Boolean = false,
     val isLaunchable: Boolean = true,
     val isEnabled: Boolean = true,
-    val uid: Int = 0
+    val uid: Int = 0,
+    val scanStatus: ScanMeasurementStatus = ScanMeasurementStatus.MEASURED
 ) {
     val cacheSizeFormatted: String
         get() = when {
@@ -81,8 +88,20 @@ data class InventorySummary(
     val systemAppsCount: Int = 0,
     val launchableAppsCount: Int = 0,
     val measurableCacheAppsCount: Int = 0,
+    val unmeasurablePackagesCount: Int = 0,
+    val errorPackagesCount: Int = 0,
     val totalMeasuredCacheBytes: Long = 0L
 )
+
+sealed class ScanState {
+    object Idle : ScanState()
+    object Scanning : ScanState()
+    data class Success(val apps: List<AppInfo>, val totalBytes: Long) : ScanState()
+    data class Partial(val apps: List<AppInfo>, val unmeasurableCount: Int, val totalBytes: Long) : ScanState()
+    object Empty : ScanState()
+    data class Failed(val error: String) : ScanState()
+    object PermissionRequired : ScanState()
+}
 
 sealed class UiState<out T> {
     object Loading : UiState<Nothing>()

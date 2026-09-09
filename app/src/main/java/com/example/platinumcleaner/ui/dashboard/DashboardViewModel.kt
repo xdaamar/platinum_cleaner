@@ -57,6 +57,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _inventorySummary = MutableStateFlow(InventorySummary())
     val inventorySummary: StateFlow<InventorySummary> = _inventorySummary.asStateFlow()
 
+    // V8: Explicit Scan State
+    private val _scanState = MutableStateFlow<ScanState>(ScanState.Idle)
+    val scanState: StateFlow<ScanState> = _scanState.asStateFlow()
+
     // Pending result yang menunggu verification setelah ON_RESUME
     private var pendingCleaningResult: CleaningResult? = null
 
@@ -409,12 +413,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun fetchAppsWithCache() {
         viewModelScope.launch {
+            _scanState.value = ScanState.Scanning
             repository.getInstalledAppsWithCache().collect { state ->
                 _appsState.value = state
                 if (state is UiState.Success) {
                     val apps = state.data
                     _inventorySummary.value = repository.lastInventorySummary
                     val totalCache = repository.calculateTotalCacheFormatted(apps)
+                    val totalBytes = apps.sumOf { it.cacheBytes }
+                    val unmeasurable = repository.lastInventorySummary.unmeasurablePackagesCount + repository.lastInventorySummary.errorPackagesCount
+                    _scanState.value = when {
+                        apps.isEmpty() -> ScanState.Empty
+                        unmeasurable > 0 -> ScanState.Partial(apps, unmeasurable, totalBytes)
+                        else -> ScanState.Success(apps, totalBytes)
+                    }
                     _metricState.value = _metricState.value.copy(
                         reclaimableAmount = totalCache,
                         sweepProgress = repository.calculateGaugeProgress(apps),
@@ -426,7 +438,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         activeStrategy = null
                     )
                 }
-                if (state is UiState.PermissionRequired) _needsPermission.value = true
+                if (state is UiState.PermissionRequired) {
+                    _needsPermission.value = true
+                    _scanState.value = ScanState.PermissionRequired
+                }
+                if (state is UiState.Error) {
+                    _scanState.value = ScanState.Failed(state.message)
+                }
             }
         }
     }
