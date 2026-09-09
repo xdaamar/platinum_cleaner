@@ -164,6 +164,14 @@ object CleanSessionManager {
     }
 
     /**
+     * V8 FIX (§59): Batalkan sesi pembersihan aktif.
+     */
+    fun cancelSession() {
+        Log.d(TAG, "Sesi dibatalkan oleh pengguna. Target saat ini: $targetPackageName")
+        endSession()
+    }
+
+    /**
      * Akhiri sesi — bersihkan semua state.
      */
     fun endSession() {

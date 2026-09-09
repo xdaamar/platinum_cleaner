@@ -6,12 +6,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.platinumcleaner.Constants
 import com.example.platinumcleaner.data.AppCleanerRepository
+import com.example.platinumcleaner.domain.cleaning.CleaningCapability
+import com.example.platinumcleaner.domain.cleaning.CleaningMode
+import com.example.platinumcleaner.domain.cleaning.CleaningPlan
 import com.example.platinumcleaner.domain.cleaning.CleaningRequest
 import com.example.platinumcleaner.domain.cleaning.CleaningResult
 import com.example.platinumcleaner.domain.cleaning.VerificationStatus
 import com.example.platinumcleaner.domain.verification.VerificationEngine
 import com.example.platinumcleaner.platform.cleaning.CapabilityResolver
 import com.example.platinumcleaner.platform.cleaning.CleaningOrchestrator
+import com.example.platinumcleaner.platform.cleaning.SystemCacheStrategy
 import com.example.platinumcleaner.service.CleanSessionManager
 import com.example.platinumcleaner.service.CleanerEvent
 import com.example.platinumcleaner.service.ServiceEventBus
@@ -150,6 +154,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * 5. Jika PENDING_VERIFICATION → simpan, tunggu ON_RESUME
      * 6. Jika langsung ada result → update UI
      */
+    /**
+     * Entry point utama user: tombol "Clean Now" / "Smart Clean".
+     * V8 Architecture (§2, §16, §17, §18):
+     * - Jika mode == SYSTEM_WIDE: Eksekusi satu operasi sistem tanpa antrian palsu 5 app.
+     * - Jika mode == PER_APP: Eksekusi antrian per-app batch tanpa limit buatan 5 aplikasi.
+     */
     fun triggerSmartClean() {
         val state = _appsState.value
         if (state !is UiState.Success || state.data.isEmpty()) {
@@ -164,71 +174,112 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         val context = getApplication<Application>()
-        val targetApps = state.data.take(Constants.MAX_DASHBOARD_APP_ITEMS)
-        val targetPackages = targetApps.map { it.packageName }
+        // Self-protection (§45): kecualikan package cleaner sendiri
+        val eligibleApps = state.data.filter { it.packageName != context.packageName }
+        if (eligibleApps.isEmpty()) {
+            Log.w(Constants.TAG_VIEWMODEL, "Tidak ada target pembersihan yang eligible")
+            return
+        }
 
-        // Snapshot beforeBytes dari data yang sudah ada (dari Scanner)
-        val beforeBytes = targetApps.associate { it.packageName to it.cacheBytes }
-
-        // Sprint 7: log context type — penting untuk diagnosa
-        Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] triggerSmartClean | contextClass=${context.javaClass.simpleName} | targets=${targetPackages.size} | packages=$targetPackages")
-        Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] beforeBytes snapshot: ${beforeBytes.entries.joinToString { "${it.key}=${it.value}B" }}")
+        val mode = CapabilityResolver.resolveMode(context, isTargetedClean = false)
 
         viewModelScope.launch {
-            // Resolve capability dulu untuk update UI label
-            val bestCapability = CapabilityResolver.resolveBest(context)
+            if (mode == CleaningMode.SYSTEM_WIDE) {
+                // V8 FIX: Mode SYSTEM_WIDE adalah 1 operasi sistem
+                val totalBeforeBytes = eligibleApps.sumOf { it.cacheBytes }
+                val beforeBytesMap = eligibleApps.associate { it.packageName to it.cacheBytes }
 
-            Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] bestCapability=${bestCapability.name}")
+                Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] triggerSmartClean (SYSTEM_WIDE) | eligibleApps=${eligibleApps.size} | totalEstimated=${VerificationEngine.formatBytes(totalBeforeBytes)}")
 
-            // Update UI: menunjukkan strategy yang digunakan (honest)
-            _metricState.value = _metricState.value.copy(
-                isCleaning = true,
-                isPurging = true,
-                cleaningError = null,
-                snackbarMessage = null,
-                activeStrategy = bestCapability,
-                currentCleanIndex = 1,
-                totalCleanApps = targetPackages.size
-            )
+                _metricState.value = _metricState.value.copy(
+                    isCleaning = true,
+                    isPurging = true,
+                    cleaningError = null,
+                    snackbarMessage = null,
+                    activeStrategy = CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST,
+                    currentCleanIndex = 1,
+                    totalCleanApps = 1,
+                    currentCleanAppName = "Penyimpanan Sistem Android"
+                )
 
-            CleanSessionManager.startSession(targetPackages.first())
-            CleanSessionManager.markExecuting(bestCapability)
+                CleanSessionManager.startSession(SystemCacheStrategy.SYSTEM_TARGET_PACKAGE)
+                CleanSessionManager.markExecuting(CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST)
 
-            val request = CleaningRequest(
-                targetPackages = targetPackages,
-                preCleanCacheBytes = beforeBytes
-            )
+                val plan = CleaningPlan(
+                    mode = CleaningMode.SYSTEM_WIDE,
+                    targets = emptyList(),
+                    totalTargets = 1,
+                    estimatedReclaim = totalBeforeBytes
+                )
 
-            Log.d(Constants.TAG_VIEWMODEL, "[CLEAN] Menggunakan strategy: ${bestCapability.name}")
-            Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] calling orchestrator.execute()")
+                val result = orchestrator.executePlan(context, plan, beforeBytesMap)
 
-            val result = orchestrator.execute(context, request)
-
-            Log.d(Constants.TAG_CLEAN, "[RESULT] orchestrator.execute() returned overallStatus=${result.overallStatus} capability=${result.selectedCapability.name}")
-
-            when (result.overallStatus) {
-                VerificationStatus.PENDING_VERIFICATION -> {
-                    // Strategy membuka Settings — tunggu user kembali
-                    pendingCleaningResult = result
-                    CleanSessionManager.markWaitingForResume(result)
-                    Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] app meninggalkan foreground — menunggu onResume")
-                    _metricState.value = _metricState.value.copy(
-                        isCleaning = true,
-                        currentCleanAppName = result.appResults.firstOrNull()?.packageName,
-                        snackbarMessage = null
-                    )
+                when (result.overallStatus) {
+                    VerificationStatus.WAITING_FOR_SYSTEM_ACTION,
+                    VerificationStatus.PENDING_VERIFICATION -> {
+                        pendingCleaningResult = result
+                        CleanSessionManager.markWaitingForResume(result)
+                        _metricState.value = _metricState.value.copy(
+                            isCleaning = true,
+                            currentCleanAppName = "Penyimpanan Sistem Android"
+                        )
+                    }
+                    else -> handleFinalResult(result)
                 }
-                else -> {
-                    // Langsung ada hasil (jarang terjadi di sprint ini)
-                    Log.d(Constants.TAG_CLEAN, "[RESULT] immediate result (no system UI): ${result.overallStatus}")
-                    handleFinalResult(result)
+            } else {
+                // Mode Per-App (Assisted atau Automated) — V8 FIX (§16, §17): Hapus limit 5 aplikasi!
+                val targetPackages = eligibleApps.map { it.packageName }
+                val beforeBytesMap = eligibleApps.associate { it.packageName to it.cacheBytes }
+                val capability = if (mode == CleaningMode.PER_APP_AUTOMATED) {
+                    CleaningCapability.ACCESSIBILITY_AUTOMATION
+                } else {
+                    CleaningCapability.PER_APP_NAVIGATION
+                }
+
+                Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] triggerSmartClean (PER_APP) | targets=${targetPackages.size} | capability=$capability")
+
+                _metricState.value = _metricState.value.copy(
+                    isCleaning = true,
+                    isPurging = true,
+                    cleaningError = null,
+                    snackbarMessage = null,
+                    activeStrategy = capability,
+                    currentCleanIndex = 1,
+                    totalCleanApps = targetPackages.size,
+                    currentCleanAppName = eligibleApps.first().appName
+                )
+
+                CleanSessionManager.startBatchSession(targetPackages)
+                CleanSessionManager.markExecuting(capability)
+
+                val plan = CleaningPlan(
+                    mode = mode,
+                    targets = targetPackages,
+                    totalTargets = targetPackages.size,
+                    estimatedReclaim = eligibleApps.sumOf { it.cacheBytes }
+                )
+
+                val result = orchestrator.executePlan(context, plan, beforeBytesMap)
+
+                when (result.overallStatus) {
+                    VerificationStatus.PENDING_VERIFICATION -> {
+                        pendingCleaningResult = result
+                        CleanSessionManager.markWaitingForResume(result)
+                        _metricState.value = _metricState.value.copy(
+                            isCleaning = true,
+                            currentCleanAppName = eligibleApps.first().appName
+                        )
+                    }
+                    else -> handleFinalResult(result)
                 }
             }
         }
     }
 
     /**
-     * Clean satu app spesifik (dipanggil dari tombol "Clean" di list).
+     * V8 FIX (§23, §24, §54): Clean satu app spesifik (dipanggil dari tombol "Bersihkan" di list).
+     * Selalu menggunakan per-app mode (PER_APP_AUTOMATED atau PER_APP_ASSISTED),
+     * TIDAK PERNAH menggunakan system-wide!
      */
     fun initiateCleanForApp(packageName: String) {
         val state = _appsState.value
@@ -240,37 +291,79 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         val context = getApplication<Application>()
+        // Self-protection (§45): Dilarang membersihkan diri sendiri
+        if (packageName == context.packageName) {
+            Log.w(Constants.TAG_VIEWMODEL, "Self-protection: tidak dapat membersihkan package sendiri")
+            return
+        }
+
         val beforeBytes = appInfo?.cacheBytes ?: 0L
 
         viewModelScope.launch {
-            val bestCapability = CapabilityResolver.resolveBest(context)
+            val mode = CapabilityResolver.resolveMode(context, isTargetedClean = true)
+            val capability = if (mode == CleaningMode.PER_APP_AUTOMATED) {
+                CleaningCapability.ACCESSIBILITY_AUTOMATION
+            } else {
+                CleaningCapability.PER_APP_NAVIGATION
+            }
+
+            Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] initiateCleanForApp | target=$packageName | mode=$mode | capability=$capability")
 
             _metricState.value = _metricState.value.copy(
                 isCleaning = true,
                 isPurging = true,
                 cleaningTarget = packageName,
-                activeStrategy = bestCapability,
+                currentCleanAppName = appInfo?.appName ?: packageName,
+                currentCleanIndex = 1,
+                totalCleanApps = 1,
+                activeStrategy = capability,
                 snackbarMessage = null
             )
 
             CleanSessionManager.startSession(packageName)
-            CleanSessionManager.markExecuting(bestCapability)
+            CleanSessionManager.markExecuting(capability)
 
-            val request = CleaningRequest(
-                targetPackages = listOf(packageName),
-                preCleanCacheBytes = mapOf(packageName to beforeBytes)
+            val plan = CleaningPlan(
+                mode = mode,
+                targets = listOf(packageName),
+                totalTargets = 1,
+                estimatedReclaim = beforeBytes
             )
 
-            val result = orchestrator.execute(context, request)
+            val result = orchestrator.executePlan(
+                context = context,
+                plan = plan,
+                preCleanCacheBytes = mapOf(packageName to beforeBytes)
+            )
 
             when (result.overallStatus) {
                 VerificationStatus.PENDING_VERIFICATION -> {
                     pendingCleaningResult = result
                     CleanSessionManager.markWaitingForResume(result)
+                    _metricState.value = _metricState.value.copy(
+                        isCleaning = true,
+                        currentCleanAppName = appInfo?.appName ?: packageName
+                    )
                 }
                 else -> handleFinalResult(result)
             }
         }
+    }
+
+    /**
+     * V8 FIX (§59): Batalkan sesi pembersihan aktif.
+     */
+    fun cancelCleaning() {
+        Log.d(Constants.TAG_CLEAN, "[ORCHESTRATOR] User cancelled cleaning session")
+        CleanSessionManager.cancelSession()
+        pendingCleaningResult = null
+        _metricState.value = _metricState.value.copy(
+            isCleaning = false,
+            isPurging = false,
+            cleaningTarget = null,
+            currentCleanAppName = null,
+            snackbarMessage = "Pembersihan dibatalkan"
+        )
     }
 
     // ===================================================
