@@ -76,6 +76,32 @@ object CapabilityResolver {
         return resolve(context).first()
     }
 
+    /**
+     * V8 FIX (§53): Tentukan CleaningMode yang tepat berdasarkan intensi dan kapabilitas.
+     * - isTargetedClean = true: User memilih app spesifik -> PER_APP_AUTOMATED (jika aktif) atau PER_APP_ASSISTED.
+     *   JANGAN PERNAH memilih SYSTEM_WIDE untuk pembersihan per-aplikasi!
+     * - isTargetedClean = false: User menekan Clean Now umum -> SYSTEM_WIDE jika didukung, fallback ke per-app.
+     */
+    fun resolveMode(context: Context, isTargetedClean: Boolean): com.example.platinumcleaner.domain.cleaning.CleaningMode {
+        val hasAccessibility = isAccessibilityAutomationAvailable(context)
+
+        return if (isTargetedClean) {
+            if (hasAccessibility) {
+                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_AUTOMATED
+            } else {
+                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_ASSISTED
+            }
+        } else {
+            if (isSystemWideCacheAvailable(context)) {
+                com.example.platinumcleaner.domain.cleaning.CleaningMode.SYSTEM_WIDE
+            } else if (hasAccessibility) {
+                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_AUTOMATED
+            } else {
+                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_ASSISTED
+            }
+        }
+    }
+
     // ===================================================
     // Individual capability checks
     // ===================================================

@@ -13,41 +13,65 @@ import com.example.platinumcleaner.domain.verification.VerificationEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+import com.example.platinumcleaner.domain.cleaning.CleaningMode
+import com.example.platinumcleaner.domain.cleaning.CleaningPlan
+
 /**
  * CleaningOrchestrator — Brain utama cleaning engine.
  *
  * Tanggung jawab:
- * 1. Terima CleaningRequest dari ViewModel
+ * 1. Terima CleaningRequest / CleaningPlan dari ViewModel
  * 2. Tanya CapabilityResolver → pilih strategy terbaik
- * 3. Eksekusi strategy
+ * 3. Eksekusi strategy sesuai mode (System-wide vs Per-App)
  * 4. Jika gagal → fallback ke strategy berikutnya (Priority 1 → 2 → 3)
  * 5. Kembalikan CleaningResult ke ViewModel
  *
  * Sesuai ai_task.md §5: Orchestrator strategy-agnostic.
  * Sesuai ai_task.md §25: Cascading fallback model.
- * Sesuai ai_task.md §26: Handle semua error case.
- * Sesuai ai_task.md §38: Tidak ada hardcoded success.
- *
- * PENTING: Orchestrator TIDAK tahu detail implementation setiap strategy.
- * Ia hanya memanggil interface CleaningStrategy.
+ * Sesuai ai_task.md §30: Pemisahan mode System-wide dan Per-App.
+ * Sesuai ai_task.md §54: DILARANG menggunakan ACTION_CLEAR_APP_CACHE per-package.
  */
 class CleaningOrchestrator(
     /**
      * Registry strategies yang tersedia, terurut dari prioritas tertinggi.
-     * Default menggunakan System + PerApp strategies.
-     * Accessibility strategy ditambahkan secara kondisional (optional).
      */
     private val strategies: List<CleaningStrategy> = listOf(
         SystemCacheStrategy(),
-        PerAppIntentStrategy()
+        PerAppIntentStrategy(),
+        AccessibilityAutomationStrategy()
     )
 ) {
 
     private val tag = "CleaningOrchestrator"
 
     // ===================================================
-    // Core: Execute cleaning request
+    // Core: Execute cleaning plan / request
     // ===================================================
+
+    /**
+     * V8: Eksekusi cleaning berdasarkan CleaningPlan eksplisit (§30, §31).
+     */
+    suspend fun executePlan(
+        context: Context,
+        plan: CleaningPlan,
+        preCleanCacheBytes: Map<String, Long>
+    ): CleaningResult {
+        Log.d(tag, "[ORCHESTRATOR] Memulai plan mode=${plan.mode} targets=${plan.targets.size} estimatedReclaim=${plan.estimatedReclaim}")
+
+        val preferredCapability = when (plan.mode) {
+            CleaningMode.SYSTEM_WIDE -> CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST
+            CleaningMode.PER_APP_ASSISTED -> CleaningCapability.PER_APP_NAVIGATION
+            CleaningMode.PER_APP_AUTOMATED -> CleaningCapability.ACCESSIBILITY_AUTOMATION
+        }
+
+        val request = CleaningRequest(
+            targetPackages = plan.targets,
+            preCleanCacheBytes = preCleanCacheBytes,
+            preferredCapability = preferredCapability
+        )
+
+        return execute(context, request)
+    }
 
     /**
      * Eksekusi cleaning request dengan strategy selection dan fallback otomatis.
@@ -171,8 +195,17 @@ class CleaningOrchestrator(
             Log.w(tag, "Preferred strategy ${request.preferredCapability} tidak tersedia — auto-select")
         }
 
+        // V8 FIX (§54): Jika request ditujukan ke 1 package spesifik (targeted clean):
+        // DILARANG memilih SYSTEM_WIDE_CACHE_REQUEST!
+        val isTargetedSingleApp = request.targetPackages.size == 1
+        val candidateCapabilities = if (isTargetedSingleApp) {
+            availableCapabilities.filter { it != CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST }
+        } else {
+            availableCapabilities
+        }
+
         // Auto-select berdasarkan priority order dari CapabilityResolver
-        for (capability in availableCapabilities) {
+        for (capability in candidateCapabilities) {
             val strategy = strategies.find {
                 it.capability == capability && it.isSupported(context)
             }
@@ -196,8 +229,10 @@ class CleaningOrchestrator(
         failedCapability: CleaningCapability,
         availableCapabilities: List<CleaningCapability>
     ): CleaningResult? {
+        val isTargetedSingleApp = request.targetPackages.size == 1
         val remainingCapabilities = availableCapabilities
             .filter { it != failedCapability && it != CleaningCapability.UNSUPPORTED }
+            .filter { !isTargetedSingleApp || it != CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST }
             .sortedBy { it.priority }
 
         for (capability in remainingCapabilities) {

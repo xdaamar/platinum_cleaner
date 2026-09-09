@@ -45,23 +45,48 @@ class PerAppIntentStrategy : CleaningStrategy {
             return buildEmptyResult(request)
         }
 
-        // Untuk per-app strategy: proses satu app dulu (yang pertama dalam queue),
-        // sisanya dihandle Orchestrator setelah resume
+        // Untuk per-app strategy: proses app terarah (yang pertama dalam queue)
         val targetPackage = request.targetPackages.first()
         val beforeBytes = request.preCleanCacheBytes[targetPackage] ?: 0L
 
         return try {
-            navigateToAppSettings(context, targetPackage)
+            val intent = Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", targetPackage, null)
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
 
+            // V8 FIX (§24): Validasi resolveActivity sebelum startActivity
+            if (intent.resolveActivity(context.packageManager) == null) {
+                Log.w(tag, "[INTENT] INTENT_UNAVAILABLE — Settings App Details tidak tersedia untuk $targetPackage")
+                return CleaningResult(
+                    requestId = request.requestId,
+                    appResults = listOf(
+                        AppCleanResult(
+                            packageName = targetPackage,
+                            appName = getAppName(context, targetPackage),
+                            beforeBytes = beforeBytes,
+                            afterBytes = -1L,
+                            status = VerificationStatus.INTENT_UNAVAILABLE,
+                            usedCapability = capability,
+                            errorMessage = "Halaman detail aplikasi tidak tersedia"
+                        )
+                    ),
+                    selectedCapability = capability,
+                    overallStatus = VerificationStatus.INTENT_UNAVAILABLE
+                )
+            }
+
+            context.startActivity(intent)
+            Log.d(tag, "[INTENT] Navigating to Settings for: $targetPackage")
             Log.d(tag, "[CLEAN] state=WAITING_FOR_USER package=$targetPackage")
 
-            // Setelah intent diluncurkan, kita tidak bisa langsung tahu hasilnya.
-            // Return PENDING_VERIFICATION — Orchestrator akan verify saat ON_RESUME.
             val appResult = AppCleanResult(
                 packageName = targetPackage,
                 appName = getAppName(context, targetPackage),
                 beforeBytes = beforeBytes,
-                afterBytes = -1L, // Belum diketahui
+                afterBytes = -1L, // Belum diketahui sebelum verifikasi
                 status = VerificationStatus.PENDING_VERIFICATION,
                 usedCapability = capability
             )
@@ -82,21 +107,6 @@ class PerAppIntentStrategy : CleaningStrategy {
     // ===================================================
     // Helpers
     // ===================================================
-
-    /**
-     * Membuka halaman detail app di Settings.
-     * Sesuai ai_task.md §34: navigateToCacheSettings — semantics spesifik.
-     */
-    private fun navigateToAppSettings(context: Context, packageName: String) {
-        val intent = Intent(
-            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-            Uri.parse("package:$packageName")
-        ).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(intent)
-        Log.d(tag, "Navigating to Settings for: $packageName")
-    }
 
     private fun getAppName(context: Context, packageName: String): String {
         return try {
@@ -127,12 +137,12 @@ class PerAppIntentStrategy : CleaningStrategy {
                 appName = packageName,
                 beforeBytes = beforeBytes,
                 afterBytes = -1L,
-                status = VerificationStatus.FAILED,
+                status = VerificationStatus.INTENT_LAUNCH_FAILED,
                 usedCapability = capability,
                 errorMessage = error
             )
         ),
         selectedCapability = capability,
-        overallStatus = VerificationStatus.FAILED
+        overallStatus = VerificationStatus.INTENT_LAUNCH_FAILED
     )
 }
