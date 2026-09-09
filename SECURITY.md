@@ -8,6 +8,16 @@ Hanya **cache** yang boleh diminta untuk dihapus. User data tidak boleh tersentu
 
 ---
 
+## Self-Protection Invariant (Sprint V8)
+
+> **Platinum Cleaner can NEVER target its own package for cleaning or modification.**
+
+Sesuai ai_task.md §45:
+- Sebelum mengeksekusi pembersihan single-app (`initiateCleanForApp`), dilakukan pengecekan `packageName == context.packageName`. Jika cocok, eksekusi segera dibatalkan dengan log peringatan.
+- Dalam pembersihan batch, package aplikasi Platinum Cleaner difilter keluar dari antrean target.
+
+---
+
 ## Zero Network Policy
 
 Aplikasi ini **tidak memiliki izin INTERNET**. Tidak ada:
@@ -18,8 +28,8 @@ Aplikasi ini **tidak memiliki izin INTERNET**. Tidak ada:
 - UI tree transmission
 
 ```xml
-<!-- AndroidManifest.xml — tidak ada INTERNET permission -->
-<!-- Verifikasi: grep -r "INTERNET" app/src/main/AndroidManifest.xml → 0 results -->
+<!-- AndroidManifest.xml — TIDAK ADA izin INTERNET atau ACCESS_NETWORK_STATE -->
+<!-- Verifikasi manifest: 100% offline application -->
 ```
 
 ---
@@ -67,6 +77,7 @@ Service dan semua strategy dilarang keras melakukan:
 | Click "Uninstall" | Di luar scope |
 | OCR / screenshot capture | Privacy violation |
 | Accessibility tree ke network | Privacy + security violation |
+| Targeted clean on own package | Self-protection violation |
 
 ---
 
@@ -85,19 +96,7 @@ Service dan semua strategy dilarang keras melakukan:
 `StorageStatsManager` adalah API resmi Android yang:
 - Berjalan sepenuhnya on-device
 - Tidak mengirim data ke mana pun
-- Mengembalikan estimasi (bukan angka pasti)
+- Mengembalikan estimasi aktual dari sistem berkas OS
 - Dapat berubah saat sistem melakukan background cleanup
 
-UI tidak pernah menjanjikan angka pasti — selalu menggunakan wording "potentially reclaimable".
-
----
-
-## Accessibility Data Privacy
-
-AccessibilityAdapter:
-- Tidak menyimpan screenshot
-- Tidak mengirim UI content ke server
-- Tidak melakukan OCR
-- Tidak mengumpulkan unrelated UI information
-- Hanya memproses data yang diperlukan untuk navigasi ke Clear Cache button
-- Hanya beroperasi saat user secara eksplisit memulai sesi cleaning
+UI tidak pernah menjanjikan angka pasti — selalu menggunakan wording jujur "potentially reclaimable".
