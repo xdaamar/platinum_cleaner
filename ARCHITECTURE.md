@@ -6,7 +6,10 @@ Platinum Cleaner menggunakan **Capability-Based Architecture** yang memisahkan *
 
 Tujuan akhir: **Platinum Cleaner tidak membutuhkan Accessibility Service untuk menjadi aplikasi cleaner yang berguna.** Accessibility hanyalah salah satu adapter opsional.
 
+> **Sprint 7 Update**: Physical Execution & Verification Reliability Fix — memperbaiki root cause kegagalan di device fisik Galaxy A55 (Samsung One UI / Android 14). Tambah staged verification T0-T4, expanded VerificationStatus states, structured debug logging, dan capability preflight.
+
 ---
+
 
 ## Architecture Diagram
 
