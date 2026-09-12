@@ -95,6 +95,12 @@ class PlatinumCleanerService : AccessibilityService() {
 
         if (!CleanSessionManager.isActive) return
 
+        if (CleanSessionManager.isStopRequested) {
+            Log.d(Constants.TAG_SERVICE, "Stop requested, aborting session")
+            abortCurrentSession("Stop requested")
+            return
+        }
+
         // Hanya proses TYPE_WINDOW_STATE_CHANGED untuk trigger fase baru
         // Ini menghindari spam dari TYPE_WINDOW_CONTENT_CHANGED yang terlalu sering
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
@@ -110,7 +116,7 @@ class PlatinumCleanerService : AccessibilityService() {
     }
 
     // ===================================================
-    // V2: Coroutine-based Navigation dengan 4 Detik Pacing
+    // V2: Coroutine-based Navigation dengan Pacing Aman
     // ===================================================
 
     private fun startNavigationCoroutine() {
@@ -125,7 +131,7 @@ class PlatinumCleanerService : AccessibilityService() {
             Log.d(Constants.TAG_SERVICE, "Memulai navigasi untuk: $targetPackage")
 
             // Hard timeout 15 detik per app (ai_task.md §3.2)
-            val result = withTimeoutOrNull(15_000L) {
+            val result = withTimeoutOrNull(Constants.HARD_TIMEOUT_MS) {
                 navigateAndClearCache(targetPackage)
             }
 
@@ -140,38 +146,51 @@ class PlatinumCleanerService : AccessibilityService() {
     }
 
     /**
-     * Alur navigasi utama V2 dengan pacing 4 detik setiap fase kritis.
-     * Sesuai ai_task.md §3.4 (Fase 1 → 2 → 3 → 4).
+     * Alur navigasi utama V2 dengan pacing dan verifikasi keamanan SettingsNodeResolver.
+     * Sesuai ai_task.md §13, §14, §15, §16.
      *
      * @return true jika berhasil, false jika gagal di salah satu fase
      */
     private suspend fun navigateAndClearCache(targetPackage: String): Boolean {
-
-        // === FASE 1: Cari menu Storage ===
-        Log.d(Constants.TAG_SERVICE, "Fase 1: Mencari menu Storage...")
-        val storageNode = findNodeWithRetry(AccessibilityNodeHelper.STORAGE_KEYWORDS)
-
-        if (storageNode == null) {
-            Log.w(Constants.TAG_SERVICE, "Fase 1 GAGAL: menu Storage tidak ditemukan")
-            emitAndProcessNext(targetPackage, success = false, reason = "Storage menu not found")
+        if (CleanSessionManager.isStopRequested) {
+            Log.d(Constants.TAG_SERVICE, "Stop requested, aborting navigation for $targetPackage")
             return false
         }
 
-        Log.d(Constants.TAG_SERVICE, "Fase 1 OK: '${storageNode.text}' ditemukan — klik")
-        AccessibilityNodeHelper.safeClick(storageNode)
-        @Suppress("DEPRECATION") storageNode.recycle()
-
-        // ⏱️ PACING 4 DETIK — anti-bot Android (ai_task.md §3.2)
-        Log.d(Constants.TAG_SERVICE, "Pacing 4s setelah klik Storage...")
-        delay(Constants.PACING_DELAY_MS)
-
-        // === FASE 2: Cari tombol Clear Cache ===
-        Log.d(Constants.TAG_SERVICE, "Fase 2: Mencari tombol Clear Cache/Hapus Cache...")
-        val clearNode = findNodeWithRetry(AccessibilityNodeHelper.CLEAR_CACHE_KEYWORDS)
+        // === FASE 1: Memeriksa apakah tombol Clear Cache sudah terlihat langsung atau cari menu Storage ===
+        Log.d(Constants.TAG_SERVICE, "Fase 1: Memeriksa window Settings untuk $targetPackage...")
+        var clearNode = findSafeClearCacheWithRetry(maxRetries = 2, retryDelayMs = 500L)
 
         if (clearNode == null) {
-            Log.w(Constants.TAG_SERVICE, "Fase 2 GAGAL: tombol hapus cache tidak ditemukan")
-            emitAndProcessNext(targetPackage, success = false, reason = "UI structure not recognized")
+            Log.d(Constants.TAG_SERVICE, "Fase 1: Mencari menu Storage via SettingsNodeResolver...")
+            val storageNode = findStorageWithRetry(maxRetries = 3, retryDelayMs = 800L)
+
+            if (storageNode == null) {
+                Log.w(Constants.TAG_SERVICE, "Fase 1 GAGAL: menu Storage tidak ditemukan")
+                emitAndProcessNext(targetPackage, success = false, reason = "Storage menu not found")
+                return false
+            }
+
+            Log.d(Constants.TAG_SERVICE, "Fase 1 OK: Storage ditemukan — klik")
+            AccessibilityNodeHelper.safeClick(storageNode)
+            @Suppress("DEPRECATION") storageNode.recycle()
+
+            if (CleanSessionManager.isStopRequested) return false
+
+            // ⏱️ PACING anti-bot Android
+            Log.d(Constants.TAG_SERVICE, "Pacing setelah klik Storage...")
+            delay(Constants.PACING_DELAY_MS)
+
+            if (CleanSessionManager.isStopRequested) return false
+
+            // === FASE 2: Cari tombol Clear Cache yang aman di dalam menu Storage ===
+            Log.d(Constants.TAG_SERVICE, "Fase 2: Mencari tombol Clear Cache yang aman...")
+            clearNode = findSafeClearCacheWithRetry(maxRetries = 4, retryDelayMs = 800L)
+        }
+
+        if (clearNode == null) {
+            Log.w(Constants.TAG_SERVICE, "Fase 2 GAGAL: tombol hapus cache tidak ditemukan atau ditolak oleh safety guard")
+            emitAndProcessNext(targetPackage, success = false, reason = "Clear cache button not found or unsafe")
             return false
         }
 
@@ -182,12 +201,14 @@ class PlatinumCleanerService : AccessibilityService() {
             return true
         }
 
-        Log.d(Constants.TAG_SERVICE, "Fase 2 OK: '${clearNode.text}' ditemukan — klik")
+        Log.d(Constants.TAG_SERVICE, "Fase 2 OK: '${clearNode.text}' aman ditemukan — klik")
         AccessibilityNodeHelper.safeClick(clearNode)
         @Suppress("DEPRECATION") clearNode.recycle()
 
-        // ⏱️ PACING 4 DETIK
-        Log.d(Constants.TAG_SERVICE, "Pacing 4s setelah klik Clear Cache...")
+        if (CleanSessionManager.isStopRequested) return false
+
+        // ⏱️ PACING setelah klik Clear Cache
+        Log.d(Constants.TAG_SERVICE, "Pacing setelah klik Clear Cache...")
         delay(Constants.PACING_DELAY_MS)
 
         // === FASE 3: Konfirmasi dialog (jika ada) ===
@@ -216,33 +237,52 @@ class PlatinumCleanerService : AccessibilityService() {
             @Suppress("DEPRECATION") root.recycle()
         }
 
-        // ⏱️ PACING 4 DETIK setelah konfirmasi
-        Log.d(Constants.TAG_SERVICE, "Pacing 4s setelah konfirmasi...")
+        if (CleanSessionManager.isStopRequested) return false
+
+        // ⏱️ PACING setelah konfirmasi
         delay(Constants.PACING_DELAY_MS)
 
-        // === FASE 4: Selesai ===
+        // === FASE 4: Selesai untuk target ini ===
         emitAndProcessNext(targetPackage, success = true, reason = null)
         return true
     }
 
     // ===================================================
-    // Helper: Cari node dengan retry ringan (tanpa blokir terlalu lama)
+    // Helper: Cari Safe Clear Cache & Storage dengan retry
     // ===================================================
 
-    private suspend fun findNodeWithRetry(
-        keywords: List<String>,
+    private suspend fun findSafeClearCacheWithRetry(
         maxRetries: Int = 3,
         retryDelayMs: Long = 800L
     ): android.view.accessibility.AccessibilityNodeInfo? {
         repeat(maxRetries) { attempt ->
             val root = rootInActiveWindow
             if (root != null) {
-                val node = AccessibilityNodeHelper.findNodeByPartialText(root, keywords)
+                val node = SettingsNodeResolver.findSafeClearCacheNode(root)
                 @Suppress("DEPRECATION") root.recycle()
                 if (node != null) return node
             }
             if (attempt < maxRetries - 1) {
-                Log.d(Constants.TAG_SERVICE, "Node tidak ditemukan, retry ${attempt + 1}/$maxRetries...")
+                Log.d(Constants.TAG_SERVICE, "Safe Clear Cache node tidak ditemukan, retry ${attempt + 1}/$maxRetries...")
+                delay(retryDelayMs)
+            }
+        }
+        return null
+    }
+
+    private suspend fun findStorageWithRetry(
+        maxRetries: Int = 3,
+        retryDelayMs: Long = 800L
+    ): android.view.accessibility.AccessibilityNodeInfo? {
+        repeat(maxRetries) { attempt ->
+            val root = rootInActiveWindow
+            if (root != null) {
+                val node = SettingsNodeResolver.findStorageNode(root)
+                @Suppress("DEPRECATION") root.recycle()
+                if (node != null) return node
+            }
+            if (attempt < maxRetries - 1) {
+                Log.d(Constants.TAG_SERVICE, "Storage node tidak ditemukan, retry ${attempt + 1}/$maxRetries...")
                 delay(retryDelayMs)
             }
         }
@@ -250,7 +290,7 @@ class PlatinumCleanerService : AccessibilityService() {
     }
 
     // ===================================================
-    // Session Completion & Batch Queue
+    // Session Completion, Bounded Return, & Batch Queue
     // ===================================================
 
     /**
@@ -272,6 +312,14 @@ class PlatinumCleanerService : AccessibilityService() {
                 Log.e(Constants.TAG_SERVICE, "❌ Gagal: $packageName — $reason")
             }
 
+            if (CleanSessionManager.isStopRequested) {
+                Log.d(Constants.TAG_SERVICE, "Stop diminta, mengakhiri sesi dan kembali ke aplikasi")
+                CleanSessionManager.endSession()
+                ServiceEventBus.emitEvent(CleanerEvent.AllCompleted)
+                returnToPlatinumCleaner()
+                return@launch
+            }
+
             // Cek antrian berikutnya
             val nextPackage = CleanSessionManager.moveToNext()
             if (nextPackage != null) {
@@ -284,22 +332,47 @@ class PlatinumCleanerService : AccessibilityService() {
                     )
                 )
 
-                // Buka halaman app berikutnya di Settings
+                // Buka halaman app berikutnya di Settings via AppInfoNavigator
                 Log.d(Constants.TAG_SERVICE, "Pindah ke app berikutnya: $nextPackage")
                 delay(1_000L) // jeda singkat antar-app
 
-                val intent = Intent(
-                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:$nextPackage")
-                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                applicationContext.startActivity(intent)
+                val navResult = com.example.platinumcleaner.platform.cleaning.AppInfoNavigator.navigateToAppInfo(
+                    applicationContext,
+                    nextPackage
+                )
+                if (navResult != com.example.platinumcleaner.domain.cleaning.NavigationResult.APP_INFO_OPENED) {
+                    Log.w(Constants.TAG_SERVICE, "Gagal membuka App Info untuk $nextPackage: $navResult")
+                    emitAndProcessNext(nextPackage, success = false, reason = navResult.name)
+                }
 
             } else {
                 // Semua app selesai
                 CleanSessionManager.endSession()
                 ServiceEventBus.emitEvent(CleanerEvent.AllCompleted)
                 Log.d(Constants.TAG_SERVICE, "🏁 Semua app dalam antrian selesai")
+                returnToPlatinumCleaner()
             }
+        }
+    }
+
+    /**
+     * Bounded return ke aplikasi Platinum Cleaner (§16).
+     * Membuka kembali aplikasi Platinum Cleaner atau melakukan bounded Back.
+     */
+    private fun returnToPlatinumCleaner() {
+        Log.d(Constants.TAG_SERVICE, "Kembali ke Platinum Cleaner...")
+        try {
+            val launchIntent = packageManager.getLaunchIntentForPackage(Constants.OUR_PACKAGE_NAME)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            if (launchIntent != null) {
+                startActivity(launchIntent)
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            }
+        } catch (e: Exception) {
+            Log.e(Constants.TAG_SERVICE, "Gagal kembali ke Platinum Cleaner via Intent: ${e.message}")
+            performGlobalAction(GLOBAL_ACTION_BACK)
         }
     }
 

@@ -43,7 +43,6 @@ object AccessibilityNodeHelper {
         "bersihkan cache",
         "borrar caché",
         "borrar cache",
-        "clear storage",
         "hapus data cache",
         "delete cache"
     )
@@ -101,6 +100,12 @@ object AccessibilityNodeHelper {
         // Periksa node saat ini
         val nodeText = node.text?.toString()?.trim() ?: ""
         val nodeDesc = node.contentDescription?.toString()?.trim() ?: ""
+        val combined = "$nodeText $nodeDesc".lowercase()
+
+        // Strict guard against Clear Data (ai_task.md §15)
+        if (SettingsNodeResolver.isDangerousClearData(combined, node.viewIdResourceName ?: "")) {
+            return null
+        }
 
         val matchesKeyword = keywords.any { keyword ->
             nodeText.contains(keyword, ignoreCase = true) ||
