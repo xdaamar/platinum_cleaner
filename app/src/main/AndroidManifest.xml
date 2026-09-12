@@ -25,6 +25,12 @@
         tools:ignore="ProtectedPermissions"
         xmlns:tools="http://schemas.android.com/tools"/>
 
+    <!--
+        SYSTEM_ALERT_WINDOW: Diperlukan untuk menampilkan Floating Assistant Bar
+        di atas halaman Pengaturan Android selama sesi pembersihan interaktif.
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/sym_def_app_icon"
@@ -42,6 +48,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            FloatingAssistantService — Asisten Mengambang Interaktif (Opsi 1 / Sprint V10).
+            Menampilkan Floating Assistant Bar di atas layar Settings untuk navigasi instan antar-aplikasi.
+        -->
+        <service
+            android:name=".service.FloatingAssistantService"
+            android:exported="false" />
 
         <!--
             PlatinumCleanerService — AccessibilityService.
