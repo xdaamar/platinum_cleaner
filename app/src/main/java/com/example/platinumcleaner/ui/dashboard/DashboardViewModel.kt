@@ -69,6 +69,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _scanState = MutableStateFlow<ScanState>(ScanState.Idle)
     val scanState: StateFlow<ScanState> = _scanState.asStateFlow()
 
+    // V10: Interactive Assisted Queue state (Opsi 1)
+    val activeInteractiveQueue: StateFlow<com.example.platinumcleaner.domain.cleaning.InteractiveQueue?> =
+        com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.activeQueue
+
+    private val _showOverlayPermissionSheet = MutableStateFlow(false)
+    val showOverlayPermissionSheet: StateFlow<Boolean> = _showOverlayPermissionSheet.asStateFlow()
+
+    fun dismissOverlayPermissionSheet() {
+        _showOverlayPermissionSheet.value = false
+    }
+
     // Pending result yang menunggu verification setelah ON_RESUME
     private var pendingCleaningResult: CleaningResult? = null
 
@@ -120,9 +131,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     /**
      * Dipanggil dari DisposableEffect ON_RESUME di DashboardScreen.
      *
-     * Dua skenario:
-     * 1. Ada pendingCleaningResult → verify (user kembali dari Settings)
-     * 2. Tidak ada → refresh data biasa
+     * Tiga skenario:
+     * 1. Ada antrean interaktif selesai → verifikasi hasil
+     * 2. Ada pendingCleaningResult → verify (user kembali dari Settings)
+     * 3. Tidak ada → refresh data biasa
      */
     fun onAppResumed() {
         val pending = pendingCleaningResult
@@ -131,12 +143,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         // Sprint 7: Selalu re-check capabilities saat resume — user mungkin baru grant permission
         checkCapabilities()
 
+        // Skenario 1: Cek jika antrean interaktif selesai atau dihentikan saat resume
+        val queue = com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.activeQueue.value
+        if (queue != null && (queue.isCompleted || queue.isStopped)) {
+            Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] onResume → Antrean interaktif selesai, memicu verifikasi hasil")
+            handleInteractiveSessionFinished()
+            return
+        }
+
         if (pending != null && CleanSessionManager.currentState ==
             CleanSessionManager.SessionState.WAITING_FOR_RESUME) {
             Log.d(Constants.TAG_VIEWMODEL, "ON_RESUME: ada pending result — mulai verifikasi")
             Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] onResume → triggering verification pipeline")
             verifyAfterResume(pending)
-        } else if (!CleanSessionManager.isActive) {
+        } else if (!CleanSessionManager.isActive && !com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.isSessionActive) {
             Log.d(Constants.TAG_VIEWMODEL, "ON_RESUME: refresh data biasa")
             Log.d(Constants.TAG_CLEAN, "[LIFECYCLE] onResume → no active session, refreshing data")
             loadData()
@@ -370,12 +390,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * V9 SPRINT FIX (§8, §30): Hentikan seluruh sesi pembersihan secara aman.
+     * V9/V10 SPRINT FIX (§8, §30): Hentikan seluruh sesi pembersihan secara aman.
      */
     fun stopCleaning() {
         Log.d(Constants.TAG_CLEAN, "[STOP] User stopped cleaning session")
-        CleanSessionManager.requestStop()
-        cancelCleaning()
+        if (com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.isSessionActive) {
+            stopInteractiveSession()
+        } else {
+            CleanSessionManager.requestStop()
+            cancelCleaning()
+        }
     }
 
     /**
@@ -669,5 +693,215 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun resetAndReload() {
         _metricState.value = StorageMetricState()
         loadData()
+    }
+
+    // ===================================================
+    // V10: Interactive Assisted Queue (Opsi 1)
+    // ===================================================
+
+    /**
+     * Memulai sesi pembersihan interaktif (Opsi 1 / Sprint V10).
+     */
+    fun startInteractiveClean(customPackages: List<String>? = null) {
+        val state = _appsState.value
+        if (state !is UiState.Success || state.data.isEmpty()) {
+            Log.w(Constants.TAG_VIEWMODEL, "Tidak ada data aplikasi untuk dibersihkan")
+            return
+        }
+
+        val context = getApplication<Application>()
+        val eligibleApps = state.data
+            .filter { it.packageName != context.packageName }
+            .filter { customPackages == null || customPackages.contains(it.packageName) }
+            .filter { it.cacheBytes > 0L }
+
+        if (eligibleApps.isEmpty()) {
+            _metricState.value = _metricState.value.copy(
+                snackbarMessage = "Semua aplikasi sudah bersih dari cache (0 B)."
+            )
+            return
+        }
+
+        val targets = eligibleApps.map {
+            com.example.platinumcleaner.domain.cleaning.CleaningTarget(
+                packageName = it.packageName,
+                appLabel = it.appName,
+                cacheBytesBefore = it.cacheBytes,
+                isEligible = true
+            )
+        }
+
+        // Cek izin overlay untuk Floating Assistant Bar
+        if (!com.example.platinumcleaner.util.OverlayPermissionHelper.canDrawOverlays(context)) {
+            Log.d(Constants.TAG_CLEAN, "[INTERACTIVE] Overlay permission belum aktif — tampilkan lembar panduan")
+            _showOverlayPermissionSheet.value = true
+            return
+        }
+
+        proceedWithInteractiveClean(targets)
+    }
+
+    /**
+     * Melanjutkan pembersihan interaktif (baik dengan atau tanpa overlay).
+     */
+    fun proceedWithInteractiveClean(targetsOverride: List<com.example.platinumcleaner.domain.cleaning.CleaningTarget>? = null) {
+        val context = getApplication<Application>()
+        val state = _appsState.value
+        val targets = targetsOverride ?: run {
+            val apps = (state as? UiState.Success)?.data ?: emptyList()
+            apps.filter { it.packageName != context.packageName && it.cacheBytes > 0L }.map {
+                com.example.platinumcleaner.domain.cleaning.CleaningTarget(
+                    packageName = it.packageName,
+                    appLabel = it.appName,
+                    cacheBytesBefore = it.cacheBytes,
+                    isEligible = true
+                )
+            }
+        }
+
+        if (targets.isEmpty()) return
+
+        // Mulai floating assistant jika diizinkan
+        if (com.example.platinumcleaner.util.OverlayPermissionHelper.canDrawOverlays(context)) {
+            com.example.platinumcleaner.service.FloatingAssistantService.start(context)
+        }
+
+        com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.startSession(context, targets)
+
+        _metricState.value = _metricState.value.copy(
+            isCleaning = true,
+            currentCleanIndex = 1,
+            totalCleanApps = targets.size,
+            currentCleanAppName = targets.first().appLabel
+        )
+    }
+
+    fun advanceInteractiveNext() {
+        val context = getApplication<Application>()
+        val next = com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.advanceToNext(context)
+        if (next != null) {
+            val queue = com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.activeQueue.value
+            _metricState.value = _metricState.value.copy(
+                currentCleanIndex = (queue?.currentIndex ?: 0) + 1,
+                currentCleanAppName = next.appLabel
+            )
+        } else {
+            handleInteractiveSessionFinished()
+        }
+    }
+
+    fun skipInteractiveCurrent() {
+        val context = getApplication<Application>()
+        val next = com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.skipCurrent(context)
+        if (next != null) {
+            val queue = com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.activeQueue.value
+            _metricState.value = _metricState.value.copy(
+                currentCleanIndex = (queue?.currentIndex ?: 0) + 1,
+                currentCleanAppName = next.appLabel
+            )
+        } else {
+            handleInteractiveSessionFinished()
+        }
+    }
+
+    fun stopInteractiveSession() {
+        val context = getApplication<Application>()
+        com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.stopSession(context)
+        com.example.platinumcleaner.service.FloatingAssistantService.stop(context)
+        handleInteractiveSessionFinished()
+    }
+
+    private fun handleInteractiveSessionFinished() {
+        val context = getApplication<Application>()
+        val queue = com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.activeQueue.value
+        com.example.platinumcleaner.service.FloatingAssistantService.stop(context)
+
+        viewModelScope.launch {
+            if (queue != null && (queue.processedPackages.isNotEmpty() || queue.skippedPackages.isNotEmpty())) {
+                verifyInteractiveResults(queue)
+            } else {
+                _metricState.value = _metricState.value.copy(
+                    isCleaning = false,
+                    currentCleanIndex = 0,
+                    totalCleanApps = 0,
+                    currentCleanAppName = null
+                )
+            }
+            com.example.platinumcleaner.platform.cleaning.InteractiveCleanManager.clearSession()
+            delay(1000)
+            loadData()
+        }
+    }
+
+    private suspend fun verifyInteractiveResults(queue: com.example.platinumcleaner.domain.cleaning.InteractiveQueue) {
+        val context = getApplication<Application>()
+        val appResults = mutableListOf<com.example.platinumcleaner.domain.cleaning.AppCleanResult>()
+
+        for (target in queue.targets) {
+            val pkg = target.packageName
+            val before = target.cacheBytesBefore
+            if (queue.processedPackages.contains(pkg)) {
+                val after = com.example.platinumcleaner.domain.verification.VerificationEngine.queryCacheBytes(context, pkg)
+                val status = if (after in 0 until before) {
+                    com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_SUCCESS
+                } else {
+                    com.example.platinumcleaner.domain.cleaning.VerificationStatus.NO_MEASURABLE_CHANGE
+                }
+                appResults.add(
+                    com.example.platinumcleaner.domain.cleaning.AppCleanResult(
+                        packageName = pkg,
+                        appName = target.appLabel,
+                        beforeBytes = before,
+                        afterBytes = if (after >= 0L) after else before,
+                        status = status,
+                        usedCapability = com.example.platinumcleaner.domain.cleaning.CleaningCapability.PER_APP_NAVIGATION
+                    )
+                )
+            } else if (queue.skippedPackages.contains(pkg)) {
+                appResults.add(
+                    com.example.platinumcleaner.domain.cleaning.AppCleanResult(
+                        packageName = pkg,
+                        appName = target.appLabel,
+                        beforeBytes = before,
+                        afterBytes = before,
+                        status = com.example.platinumcleaner.domain.cleaning.VerificationStatus.USER_SKIPPED,
+                        usedCapability = com.example.platinumcleaner.domain.cleaning.CleaningCapability.PER_APP_NAVIGATION
+                    )
+                )
+            } else {
+                appResults.add(
+                    com.example.platinumcleaner.domain.cleaning.AppCleanResult(
+                        packageName = pkg,
+                        appName = target.appLabel,
+                        beforeBytes = before,
+                        afterBytes = before,
+                        status = com.example.platinumcleaner.domain.cleaning.VerificationStatus.STOPPED,
+                        usedCapability = com.example.platinumcleaner.domain.cleaning.CleaningCapability.PER_APP_NAVIGATION
+                    )
+                )
+            }
+        }
+
+        val totalReclaimed = appResults.sumOf { maxOf(0L, it.beforeBytes - it.afterBytes) }
+        val successCount = appResults.count { it.status == com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_SUCCESS }
+        val overallStatus = if (successCount > 0) com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_SUCCESS else com.example.platinumcleaner.domain.cleaning.VerificationStatus.NO_MEASURABLE_CHANGE
+
+        val result = com.example.platinumcleaner.domain.cleaning.CleaningResult(
+            requestId = queue.sessionId,
+            appResults = appResults,
+            selectedCapability = com.example.platinumcleaner.domain.cleaning.CleaningCapability.PER_APP_NAVIGATION,
+            overallStatus = overallStatus
+        )
+
+        _metricState.value = _metricState.value.copy(
+            isCleaning = false,
+            isCleaned = successCount > 0,
+            lastCleaningResult = result,
+            showCleaningSummary = true,
+            currentCleanIndex = 0,
+            totalCleanApps = 0,
+            currentCleanAppName = null,
+            reclaimableAmount = if (successCount > 0) com.example.platinumcleaner.domain.verification.VerificationEngine.formatBytes(totalReclaimed) else _metricState.value.reclaimableAmount
+        )
     }
 }

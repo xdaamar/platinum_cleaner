@@ -30,13 +30,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -77,6 +80,7 @@ import com.example.platinumcleaner.Constants
 import com.example.platinumcleaner.domain.cleaning.CleaningCapability
 import com.example.platinumcleaner.R
 import com.example.platinumcleaner.ui.theme.Dimens
+import com.example.platinumcleaner.ui.theme.PlatinumAccent
 import com.example.platinumcleaner.ui.theme.PlatinumBackground
 import com.example.platinumcleaner.ui.theme.PlatinumOnPrimary
 import com.example.platinumcleaner.ui.theme.PlatinumOnSurface
@@ -103,6 +107,8 @@ fun DashboardScreen(
     val appsState by viewModel.appsState.collectAsState()
     val metricState by viewModel.metricState.collectAsState()
     val needsPermission by viewModel.needsPermission.collectAsState()
+    val showOverlayPermissionSheet by viewModel.showOverlayPermissionSheet.collectAsState()
+    val activeInteractiveQueue by viewModel.activeInteractiveQueue.collectAsState()
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
@@ -140,7 +146,7 @@ fun DashboardScreen(
         }
     }
 
-    // Permission Bottom Sheet
+    // Permission Bottom Sheet (Usage Access)
     if (showPermissionSheet) {
         ModalBottomSheet(
             onDismissRequest = { showPermissionSheet = false },
@@ -164,6 +170,27 @@ fun DashboardScreen(
         }
     }
 
+    // V10: Overlay Permission Bottom Sheet (Display Over Other Apps)
+    if (showOverlayPermissionSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { viewModel.dismissOverlayPermissionSheet() },
+            sheetState = sheetState,
+            containerColor = PlatinumSurface,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        ) {
+            OverlayPermissionSheetContent(
+                onEnableClick = {
+                    viewModel.dismissOverlayPermissionSheet()
+                    context.startActivity(com.example.platinumcleaner.util.OverlayPermissionHelper.createOverlayPermissionIntent(context))
+                },
+                onSkipClick = {
+                    viewModel.dismissOverlayPermissionSheet()
+                    viewModel.proceedWithInteractiveClean()
+                }
+            )
+        }
+    }
+
     // V8: Full Real Inventory Bottom Sheet (View All)
     if (showViewAllSheet) {
         val allApps = (appsState as? UiState.Success)?.data ?: emptyList()
@@ -172,7 +199,11 @@ fun DashboardScreen(
             inventorySummary = inventorySummary,
             onCleanApp = { pkg ->
                 showViewAllSheet = false
-                viewModel.initiateCleanForApp(pkg)
+                viewModel.startInteractiveClean(listOf(pkg))
+            },
+            onCleanBatch = { pkgs ->
+                showViewAllSheet = false
+                viewModel.startInteractiveClean(pkgs)
             },
             onDismiss = { showViewAllSheet = false }
         )
@@ -228,11 +259,25 @@ fun DashboardScreen(
             item {
                 PrimaryActionButton(
                     state = metricState,
-                    onClick = { viewModel.triggerSmartClean() } // Sprint 6: Orchestrator-driven
+                    onClick = { viewModel.startInteractiveClean() }
                 )
             }
 
-            if (metricState.isCleaning) {
+            // V10: In-app fallback card if an interactive queue is currently active
+            activeInteractiveQueue?.let { queue ->
+                if (!queue.isCompleted) {
+                    item {
+                        InteractiveQueueCard(
+                            queue = queue,
+                            onNextClick = { viewModel.advanceInteractiveNext() },
+                            onSkipClick = { viewModel.skipInteractiveCurrent() },
+                            onStopClick = { viewModel.stopInteractiveSession() }
+                        )
+                    }
+                }
+            }
+
+            if (metricState.isCleaning && activeInteractiveQueue == null) {
                 item {
                     CleaningStatusBanner(
                         targetPackage = metricState.cleaningTarget,
@@ -252,7 +297,7 @@ fun DashboardScreen(
                                 apps = topApps,
                                 totalCount = state.data.size,
                                 onViewAllClick = { showViewAllSheet = true },
-                                onCleanApp = { viewModel.initiateCleanForApp(it) }
+                                onCleanApp = { viewModel.startInteractiveClean(listOf(it)) }
                             )
                         }
                     }
@@ -686,6 +731,7 @@ fun ViewAllInventorySheet(
     apps: List<AppInfo>,
     inventorySummary: InventorySummary,
     onCleanApp: (String) -> Unit,
+    onCleanBatch: (List<String>) -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -866,6 +912,28 @@ fun ViewAllInventorySheet(
                     onClick = { selectedFilter = PackageCategoryFilter.SYSTEM_ONLY },
                     label = { Text("Sistem (${apps.count { it.isSystemApp }})", style = MaterialTheme.typography.labelSmall) }
                 )
+            }
+
+            val cleanableFiltered = remember(filteredApps) { filteredApps.filter { it.cacheBytes > 0L } }
+            if (cleanableFiltered.isNotEmpty()) {
+                Button(
+                    onClick = { onCleanBatch(cleanableFiltered.map { it.packageName }) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = Dimens.SpacingSM)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(Dimens.RadiusMD),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PlatinumPrimary,
+                        contentColor = PlatinumOnPrimary
+                    )
+                ) {
+                    Text(
+                        text = "Bersihkan Semua Terfilter (${cleanableFiltered.size})",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             // App List
@@ -1094,3 +1162,258 @@ fun CleaningSummarySheet(
         }
     }
 }
+
+// ===================================================
+// V10: Overlay Permission Onboarding Sheet
+// ===================================================
+
+@Composable
+fun OverlayPermissionSheetContent(
+    onEnableClick: () -> Unit,
+    onSkipClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 28.dp)
+            .padding(bottom = 32.dp)
+            .navigationBarsPadding()
+    ) {
+        Box(
+            modifier = Modifier
+                .width(40.dp)
+                .height(4.dp)
+                .clip(CircleShape)
+                .background(PlatinumOutlineVariant)
+                .align(Alignment.CenterHorizontally)
+        )
+        Spacer(modifier = Modifier.height(28.dp))
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingMD)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(PlatinumPrimary.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_shield_check),
+                    contentDescription = null,
+                    tint = PlatinumPrimary,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+            Column {
+                Text(
+                    text = "Floating Assistant",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = PlatinumOnSurface
+                )
+                Text(
+                    text = "Bantuan Pembersihan Layar Terapung",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PlatinumOnSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(Dimens.SpacingLG))
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(Dimens.RadiusMD),
+            color = PlatinumSurfaceContainerLow
+        ) {
+            Column(modifier = Modifier.padding(Dimens.SpacingMD)) {
+                Text(
+                    text = "Fitur ini menampilkan kartu kecil mengambang saat halaman Pengaturan dibuka, memudahkan Anda mengetuk tombol 'Lanjut' tanpa perlu bolak-balik membuka Platinum Cleaner secara manual.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PlatinumOnSurface
+                )
+                Spacer(modifier = Modifier.height(Dimens.SpacingSM))
+                Text(
+                    text = "✓ Aman 100% tanpa internet & hemat baterai\n✓ Bebas dipindah (draggable)\n✓ Dapat dilewati kapan saja",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = PlatinumOnSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(Dimens.SpacingXL))
+
+        Button(
+            onClick = onEnableClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(Dimens.RadiusMD),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = PlatinumPrimary,
+                contentColor = PlatinumOnPrimary
+            )
+        ) {
+            Text(
+                text = "Aktifkan Izin Menampilkan di Atas",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(Dimens.SpacingSM))
+
+        OutlinedButton(
+            onClick = onSkipClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp),
+            shape = RoundedCornerShape(Dimens.RadiusMD),
+            border = BorderStroke(1.dp, PlatinumOutlineVariant),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = PlatinumOnSurfaceVariant
+            )
+        ) {
+            Text(
+                text = "Lanjutkan Tanpa Widget Mengambang",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+// ===================================================
+// V10: Interactive Queue In-App Card
+// ===================================================
+
+@Composable
+fun InteractiveQueueCard(
+    queue: com.example.platinumcleaner.domain.cleaning.InteractiveQueue,
+    onNextClick: () -> Unit,
+    onSkipClick: () -> Unit,
+    onStopClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val currentTarget = queue.currentTarget ?: return
+    val progress = queue.progressFraction
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(Dimens.RadiusLG),
+        color = PlatinumSurface,
+        shadowElevation = Dimens.ElevationSoft,
+        border = BorderStroke(1.dp, PlatinumPrimary.copy(alpha = 0.2f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(Dimens.SpacingLG)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingSM)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(PlatinumPrimary)
+                    )
+                    Text(
+                        text = "Antrean Aktif",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = PlatinumPrimary
+                    )
+                }
+
+                Text(
+                    text = "${queue.currentIndex + 1} / ${queue.targets.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PlatinumOnSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.SpacingMD))
+
+            LinearProgressIndicator(
+                progress = progress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(CircleShape),
+                color = PlatinumPrimary,
+                trackColor = PlatinumOutlineVariant.copy(alpha = 0.3f),
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.SpacingMD))
+
+            Text(
+                text = currentTarget.appLabel,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = PlatinumOnSurface
+            )
+            Text(
+                text = "Cache awal: ${com.example.platinumcleaner.domain.verification.VerificationEngine.formatBytes(currentTarget.cacheBytesBefore)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = PlatinumOnSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.SpacingMD))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Dimens.SpacingSM),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = onSkipClick,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(Dimens.RadiusMD),
+                    border = BorderStroke(1.dp, PlatinumOutlineVariant),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PlatinumOnSurfaceVariant)
+                ) {
+                    Text("Lewati", style = MaterialTheme.typography.bodyMedium)
+                }
+
+                Button(
+                    onClick = onNextClick,
+                    modifier = Modifier
+                        .weight(2f)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(Dimens.RadiusMD),
+                    colors = ButtonDefaults.buttonColors(containerColor = PlatinumPrimary, contentColor = PlatinumOnPrimary)
+                ) {
+                    Text("Buka Pengaturan ➔", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.SpacingSM))
+
+            TextButton(
+                onClick = onStopClick,
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Text(
+                    text = "Hentikan Sesi Pembersihan",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = PlatinumAccent
+                )
+            }
+        }
+    }
+}
+

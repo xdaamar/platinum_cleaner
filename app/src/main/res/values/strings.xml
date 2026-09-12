@@ -40,4 +40,12 @@
 
     <!-- Accessibility Service -->
     <string name="accessibility_service_description">Platinum Cleaner uses Accessibility Service solely to automate cache clearing in Android Settings. It never reads or interacts with any other app.</string>
+
+    <!-- Interactive Cleaner & Overlay Permission -->
+    <string name="clean_button_interactive">Mulai Bersihkan</string>
+    <string name="overlay_permission_title">Izin Asisten Diperlukan</string>
+    <string name="overlay_permission_badge">Pengaturan Sekali Saja</string>
+    <string name="overlay_permission_body">Agar Asisten Pembersihan dapat memandu Anda dan menyediakan tombol navigasi cepat di atas layar Pengaturan, izinkan Platinum Cleaner untuk tampil di atas aplikasi lain.</string>
+    <string name="overlay_permission_button">Aktifkan Izin Asisten</string>
+    <string name="overlay_permission_skip">Lanjutkan Tanpa Asisten</string>
 </resources>
