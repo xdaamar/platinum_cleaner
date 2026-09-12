@@ -644,8 +644,9 @@ fun RealAppCacheRowItem(
                             }
                         }
                     }
+                    val cacheDisplay = if (app.cacheBytes == 0L) "0 B (Bersih)" else app.cacheSizeFormatted
                     Text(
-                        text = "${app.cacheSizeFormatted} • ${app.packageName}",
+                        text = "$cacheDisplay • ${app.packageName}",
                         style = MaterialTheme.typography.bodySmall,
                         color = PlatinumOnSurfaceVariant,
                         maxLines = 1,
@@ -654,8 +655,14 @@ fun RealAppCacheRowItem(
                 }
             }
             Spacer(Modifier.width(Dimens.SpacingSM))
-            TextButton(onClick = onClean, colors = ButtonDefaults.textButtonColors(contentColor = PlatinumPrimary)) {
-                Text("Bersihkan", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+            if (app.cacheBytes > 0L) {
+                TextButton(onClick = onClean, colors = ButtonDefaults.textButtonColors(contentColor = PlatinumPrimary)) {
+                    Text("Bersihkan", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                }
+            } else {
+                TextButton(onClick = onClean, colors = ButtonDefaults.textButtonColors(contentColor = PlatinumOnSurfaceVariant)) {
+                    Text("Detail", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Normal)
+                }
             }
         }
     }
@@ -685,6 +692,7 @@ fun ViewAllInventorySheet(
                     app.packageName.contains(searchQuery, ignoreCase = true)
             val matchesFilter = when (selectedFilter) {
                 PackageCategoryFilter.ALL -> true
+                PackageCategoryFilter.HAS_CACHE -> app.cacheBytes > 0L
                 PackageCategoryFilter.USER_ONLY -> !app.isSystemApp
                 PackageCategoryFilter.SYSTEM_ONLY -> app.isSystemApp
             }
@@ -834,6 +842,11 @@ fun ViewAllInventorySheet(
                     selected = selectedFilter == PackageCategoryFilter.ALL,
                     onClick = { selectedFilter = PackageCategoryFilter.ALL },
                     label = { Text("Semua (${apps.size})", style = MaterialTheme.typography.labelSmall) }
+                )
+                FilterChip(
+                    selected = selectedFilter == PackageCategoryFilter.HAS_CACHE,
+                    onClick = { selectedFilter = PackageCategoryFilter.HAS_CACHE },
+                    label = { Text("Ber-cache (${apps.count { it.cacheBytes > 0L }})", style = MaterialTheme.typography.labelSmall) }
                 )
                 FilterChip(
                     selected = selectedFilter == PackageCategoryFilter.USER_ONLY,

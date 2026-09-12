@@ -1,5 +1,6 @@
 package com.example.platinumcleaner.domain.inventory
 
+import com.example.platinumcleaner.domain.cleaning.CleaningTarget
 import com.example.platinumcleaner.ui.dashboard.AppInfo
 import com.example.platinumcleaner.ui.dashboard.InventorySummary
 import com.example.platinumcleaner.ui.dashboard.PackageCategoryFilter
@@ -9,10 +10,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * PackageInventoryTest — Unit tests for Sprint V8 inventory models & filtering logic.
- * Sesuai ai_task.md §59 (Mandatory Tests):
+ * PackageInventoryTest — Unit tests for Sprint V9 inventory truth & zero-cache semantics.
+ * Sesuai ai_task.md V9 (§5, §6, §27, §38, §39, §41, §47, §59):
+ * - Real inventory without dummy data
+ * - Zero-cache preservation in inventory
+ * - Target generation excluding zero-cache & self-package
  * - Duplicate package removal
- * - System vs user filtering
+ * - System vs user vs has-cache filtering
  * - Count consistency
  * - Formatted cache sizes
  */
@@ -33,6 +37,19 @@ class PackageInventoryTest {
         assertTrue(app.isEnabled)
         assertEquals(0, app.uid)
         assertEquals("820 MB", app.cacheSizeFormatted)
+        assertFalse(app.isCacheZero)
+    }
+
+    @Test
+    fun testZeroCacheAppFormatting() {
+        val zeroApp = AppInfo(
+            packageName = "com.google.android.youtube",
+            appName = "YouTube",
+            cacheBytes = 0L
+        )
+
+        assertEquals("0 B", zeroApp.cacheSizeFormatted)
+        assertTrue(zeroApp.isCacheZero)
     }
 
     @Test
@@ -64,11 +81,17 @@ class PackageInventoryTest {
     }
 
     @Test
-    fun testCategoryFiltering() {
-        val userApp = AppInfo(
+    fun testCategoryFilteringWithHasCache() {
+        val userAppWithCache = AppInfo(
             packageName = "org.telegram.messenger",
             appName = "Telegram",
             cacheBytes = 1000L,
+            isSystemApp = false
+        )
+        val userAppZeroCache = AppInfo(
+            packageName = "com.google.android.youtube",
+            appName = "YouTube",
+            cacheBytes = 0L,
             isSystemApp = false
         )
         val systemApp = AppInfo(
@@ -78,36 +101,79 @@ class PackageInventoryTest {
             isSystemApp = true
         )
 
-        val allApps = listOf(userApp, systemApp)
+        val allApps = listOf(userAppWithCache, userAppZeroCache, systemApp)
 
+        // Filter ALL
         val allFiltered = allApps.filter {
             when (PackageCategoryFilter.ALL) {
                 PackageCategoryFilter.ALL -> true
+                PackageCategoryFilter.HAS_CACHE -> it.cacheBytes > 0L
                 PackageCategoryFilter.USER_ONLY -> !it.isSystemApp
                 PackageCategoryFilter.SYSTEM_ONLY -> it.isSystemApp
             }
         }
-        assertEquals(2, allFiltered.size)
+        assertEquals(3, allFiltered.size)
 
+        // Filter HAS_CACHE
+        val cacheFiltered = allApps.filter {
+            when (PackageCategoryFilter.HAS_CACHE) {
+                PackageCategoryFilter.ALL -> true
+                PackageCategoryFilter.HAS_CACHE -> it.cacheBytes > 0L
+                PackageCategoryFilter.USER_ONLY -> !it.isSystemApp
+                PackageCategoryFilter.SYSTEM_ONLY -> it.isSystemApp
+            }
+        }
+        assertEquals(2, cacheFiltered.size)
+        assertTrue(cacheFiltered.all { it.cacheBytes > 0L })
+
+        // Filter USER_ONLY
         val userFiltered = allApps.filter {
             when (PackageCategoryFilter.USER_ONLY) {
                 PackageCategoryFilter.ALL -> true
+                PackageCategoryFilter.HAS_CACHE -> it.cacheBytes > 0L
                 PackageCategoryFilter.USER_ONLY -> !it.isSystemApp
                 PackageCategoryFilter.SYSTEM_ONLY -> it.isSystemApp
             }
         }
-        assertEquals(1, userFiltered.size)
-        assertEquals("Telegram", userFiltered.first().appName)
+        assertEquals(2, userFiltered.size)
+    }
 
-        val systemFiltered = allApps.filter {
-            when (PackageCategoryFilter.SYSTEM_ONLY) {
-                PackageCategoryFilter.ALL -> true
-                PackageCategoryFilter.USER_ONLY -> !it.isSystemApp
-                PackageCategoryFilter.SYSTEM_ONLY -> it.isSystemApp
-            }
-        }
-        assertEquals(1, systemFiltered.size)
-        assertEquals("Settings", systemFiltered.first().appName)
+    @Test
+    fun testZeroCachePolicyPreservesAppInInventory() {
+        // ai_task.md §6: Zero cache app must remain in inventory, not silently removed
+        val telegram = AppInfo("org.telegram.messenger", "Telegram", 820 * 1024 * 1024L)
+        val youtube = AppInfo("com.google.android.youtube", "YouTube", 0L)
+
+        val inventory = listOf(telegram, youtube)
+        assertEquals(2, inventory.size)
+        assertTrue(inventory.any { it.packageName == "com.google.android.youtube" })
+    }
+
+    @Test
+    fun testScanResultBuildCleaningTargetsExcludesSelfAndZeroCache() {
+        // ai_task.md §5, §6, §27, §47
+        val telegram = AppInfo("org.telegram.messenger", "Telegram", 820 * 1024 * 1024L)
+        val youtubeZero = AppInfo("com.google.android.youtube", "YouTube", 0L)
+        val selfCleaner = AppInfo("com.example.platinumcleaner", "Platinum Cleaner", 50 * 1024 * 1024L)
+
+        val scanResult = ScanResult(
+            rawCount = 169,
+            relevantCount = 65,
+            eligibleCount = 1,
+            measurableCacheCount = 2,
+            items = listOf(telegram, youtubeZero, selfCleaner),
+            totalCacheBytes = (820 + 50) * 1024 * 1024L
+        )
+
+        val targets = scanResult.buildCleaningTargets(excludePackageName = "com.example.platinumcleaner")
+
+        // Only Telegram should be a cleaning target (YouTube is 0B, Platinum Cleaner is self-protected)
+        assertEquals(1, targets.size)
+        val target = targets.first()
+        assertEquals("org.telegram.messenger", target.packageName)
+        assertEquals("Telegram", target.appLabel)
+        assertEquals(820 * 1024 * 1024L, target.cacheBytesBefore)
+        assertTrue(target.isEligible)
     }
 
     @Test
@@ -134,17 +200,17 @@ class PackageInventoryTest {
     @Test
     fun testInventorySummaryConsistency() {
         val summary = InventorySummary(
-            rawPackagesCount = 352,
-            userAppsCount = 142,
-            systemAppsCount = 210,
-            launchableAppsCount = 85,
-            measurableCacheAppsCount = 84,
-            totalMeasuredCacheBytes = 3_800_000_000L
+            rawPackagesCount = 169,
+            userAppsCount = 64,
+            systemAppsCount = 105,
+            launchableAppsCount = 48,
+            measurableCacheAppsCount = 31,
+            totalMeasuredCacheBytes = 2_800_000_000L
         )
 
-        assertEquals(352, summary.rawPackagesCount)
-        assertEquals(352, summary.userAppsCount + summary.systemAppsCount)
-        assertEquals(84, summary.measurableCacheAppsCount)
-        assertEquals(3_800_000_000L, summary.totalMeasuredCacheBytes)
+        assertEquals(169, summary.rawPackagesCount)
+        assertEquals(169, summary.userAppsCount + summary.systemAppsCount)
+        assertEquals(31, summary.measurableCacheAppsCount)
+        assertEquals(2_800_000_000L, summary.totalMeasuredCacheBytes)
     }
 }

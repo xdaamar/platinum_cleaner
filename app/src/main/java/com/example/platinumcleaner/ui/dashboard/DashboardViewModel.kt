@@ -61,6 +61,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _inventorySummary = MutableStateFlow(InventorySummary())
     val inventorySummary: StateFlow<InventorySummary> = _inventorySummary.asStateFlow()
 
+    // V9: Authoritative ScanResult (§39)
+    private val _scanResult = MutableStateFlow(com.example.platinumcleaner.domain.inventory.ScanResult())
+    val scanResult: StateFlow<com.example.platinumcleaner.domain.inventory.ScanResult> = _scanResult.asStateFlow()
+
     // V8: Explicit Scan State
     private val _scanState = MutableStateFlow<ScanState>(ScanState.Idle)
     val scanState: StateFlow<ScanState> = _scanState.asStateFlow()
@@ -174,10 +178,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         val context = getApplication<Application>()
-        // Self-protection (§45): kecualikan package cleaner sendiri
-        val eligibleApps = state.data.filter { it.packageName != context.packageName }
+        // Self-protection (§47) & Zero-cache policy (§6, §27):
+        // Target pembersihan HANYA aplikasi yang memiliki cache > 0 B dan bukan package cleaner sendiri
+        val eligibleApps = state.data
+            .filter { it.packageName != context.packageName }
+            .filter { it.cacheBytes > 0L }
+
         if (eligibleApps.isEmpty()) {
-            Log.w(Constants.TAG_VIEWMODEL, "Tidak ada target pembersihan yang eligible")
+            Log.w(Constants.TAG_VIEWMODEL, "Tidak ada target pembersihan yang eligible (cache 0 B)")
+            _metricState.value = _metricState.value.copy(
+                snackbarMessage = "Semua aplikasi sudah bersih dari cache (0 B)."
+            )
             return
         }
 
@@ -511,9 +522,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 _appsState.value = state
                 if (state is UiState.Success) {
                     val apps = state.data
+                    val measurableApps = apps.filter { it.cacheBytes > 0L }
                     _inventorySummary.value = repository.lastInventorySummary
-                    val totalCache = repository.calculateTotalCacheFormatted(apps)
-                    val totalBytes = apps.sumOf { it.cacheBytes }
+                    _scanResult.value = repository.lastScanResult
+
+                    val totalCache = repository.calculateTotalCacheFormatted(measurableApps)
+                    val totalBytes = measurableApps.sumOf { it.cacheBytes }
                     val unmeasurable = repository.lastInventorySummary.unmeasurablePackagesCount + repository.lastInventorySummary.errorPackagesCount
                     _scanState.value = when {
                         apps.isEmpty() -> ScanState.Empty
@@ -522,7 +536,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                     _metricState.value = _metricState.value.copy(
                         reclaimableAmount = totalCache,
-                        sweepProgress = repository.calculateGaugeProgress(apps),
+                        sweepProgress = repository.calculateGaugeProgress(measurableApps),
                         isPurging = false,
                         isCleaning = false,
                         currentCleanIndex = 0,

@@ -66,17 +66,22 @@ data class AppInfo(
     val uid: Int = 0,
     val scanStatus: ScanMeasurementStatus = ScanMeasurementStatus.MEASURED
 ) {
+    val isCacheZero: Boolean
+        get() = cacheBytes == 0L
+
     val cacheSizeFormatted: String
         get() = when {
             cacheBytes >= 1_073_741_824L -> String.format("%.1f GB", cacheBytes / 1_073_741_824.0)
             cacheBytes >= 1_048_576L -> String.format("%.0f MB", cacheBytes / 1_048_576.0)
             cacheBytes >= 1_024L -> String.format("%.0f KB", cacheBytes / 1_024.0)
-            else -> "$cacheBytes B"
+            cacheBytes > 0L -> "$cacheBytes B"
+            else -> "0 B"
         }
 }
 
 enum class PackageCategoryFilter {
     ALL,
+    HAS_CACHE,
     USER_ONLY,
     SYSTEM_ONLY
 }
