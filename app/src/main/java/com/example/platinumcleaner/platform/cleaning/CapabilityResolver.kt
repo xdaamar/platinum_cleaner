@@ -77,28 +77,19 @@ object CapabilityResolver {
     }
 
     /**
-     * V8 FIX (§53): Tentukan CleaningMode yang tepat berdasarkan intensi dan kapabilitas.
-     * - isTargetedClean = true: User memilih app spesifik -> PER_APP_AUTOMATED (jika aktif) atau PER_APP_ASSISTED.
-     *   JANGAN PERNAH memilih SYSTEM_WIDE untuk pembersihan per-aplikasi!
-     * - isTargetedClean = false: User menekan Clean Now umum -> SYSTEM_WIDE jika didukung, fallback ke per-app.
+     * V9 SPRINT FIX (ai_task.md §2, §4, §37, §74):
+     * Tentukan CleaningMode yang tepat untuk sesi pembersihan.
+     * - START CLEAN = PER-APP CLEANING SESSION
+     * - Accessibility aktif -> PER_APP_AUTOMATED
+     * - Accessibility nonaktif -> PER_APP_ASSISTED
+     * - SYSTEM_WIDE mode TIDAK BOLEH menggantikan per-app mode secara diam-diam.
      */
-    fun resolveMode(context: Context, isTargetedClean: Boolean): com.example.platinumcleaner.domain.cleaning.CleaningMode {
+    fun resolveMode(context: Context, isTargetedClean: Boolean = false): com.example.platinumcleaner.domain.cleaning.CleaningMode {
         val hasAccessibility = isAccessibilityAutomationAvailable(context)
-
-        return if (isTargetedClean) {
-            if (hasAccessibility) {
-                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_AUTOMATED
-            } else {
-                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_ASSISTED
-            }
+        return if (hasAccessibility) {
+            com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_AUTOMATED
         } else {
-            if (isSystemWideCacheAvailable(context)) {
-                com.example.platinumcleaner.domain.cleaning.CleaningMode.SYSTEM_WIDE
-            } else if (hasAccessibility) {
-                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_AUTOMATED
-            } else {
-                com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_ASSISTED
-            }
+            com.example.platinumcleaner.domain.cleaning.CleaningMode.PER_APP_ASSISTED
         }
     }
 

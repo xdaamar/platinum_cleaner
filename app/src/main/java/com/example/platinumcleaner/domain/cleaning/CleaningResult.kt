@@ -46,6 +46,21 @@ enum class VerificationStatus {
     /** User menekan Back / membatalkan system UI — tidak ada pembersihan yang terjadi. */
     USER_CANCELLED,
 
+    /** User secara eksplisit melewati (skip) target pembersihan saat ini (ai_task.md §25, §26). */
+    USER_SKIPPED,
+
+    /** User menghentikan seluruh sesi pembersihan (ai_task.md §8, §25, §30). */
+    STOPPED,
+
+    /** Otomasi Accessibility tidak dapat menemukan tombol yang aman atau ambigu (ai_task.md §25). */
+    AUTOMATION_FAILED,
+
+    /** App Info gagal dibuka atau target tidak terjangkau (ai_task.md §25). */
+    NAVIGATION_FAILED,
+
+    /** Paket tidak tersedia, telah di-uninstall, atau dinonaktifkan (ai_task.md §25, §45, §46). */
+    TARGET_UNAVAILABLE,
+
     // ===== Legacy / Compat States =====
 
     /** Cache tidak berubah sama sekali (alias NO_MEASURABLE_CHANGE untuk backward compat). */

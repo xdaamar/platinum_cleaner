@@ -260,7 +260,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     currentCleanAppName = eligibleApps.first().appName
                 )
 
-                CleanSessionManager.startBatchSession(targetPackages)
+                val targets = eligibleApps.map { app ->
+                    com.example.platinumcleaner.domain.cleaning.CleaningTarget(
+                        packageName = app.packageName,
+                        appLabel = app.appName,
+                        cacheBytesBefore = app.cacheBytes,
+                        isEligible = true
+                    )
+                }
+                CleanSessionManager.startBatchSessionWithTargets(targets, mode)
                 CleanSessionManager.markExecuting(capability)
 
                 val plan = CleaningPlan(
@@ -362,6 +370,81 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
+     * V9 SPRINT FIX (§8, §30): Hentikan seluruh sesi pembersihan secara aman.
+     */
+    fun stopCleaning() {
+        Log.d(Constants.TAG_CLEAN, "[STOP] User stopped cleaning session")
+        CleanSessionManager.requestStop()
+        cancelCleaning()
+    }
+
+    /**
+     * V9 SPRINT FIX (§26): Lewati (skip) aplikasi saat ini dan lanjut ke aplikasi berikutnya.
+     */
+    fun skipCurrentApp() {
+        Log.d(Constants.TAG_CLEAN, "[SKIP] User skipped current app")
+        val nextPackage = CleanSessionManager.skipCurrent()
+        if (nextPackage != null) {
+            val appInfo = (_appsState.value as? UiState.Success)?.data?.find { it.packageName == nextPackage }
+            _metricState.value = _metricState.value.copy(
+                currentCleanIndex = CleanSessionManager.currentIndex + 1,
+                currentCleanAppName = appInfo?.appName ?: nextPackage,
+                snackbarMessage = "Aplikasi dilewati — beralih ke target berikutnya"
+            )
+        } else {
+            cancelCleaning()
+        }
+    }
+
+    /**
+     * V8 & V9 FIX (§37, §74): Pembersihan Sistem Android (Secondary Feature).
+     * Hanya dipanggil jika user secara eksplisit memilih fitur sistem, BUKAN dari Start Clean.
+     */
+    fun triggerSystemWideClean() {
+        val state = _appsState.value
+        if (state !is UiState.Success || state.data.isEmpty()) return
+        if (CleanSessionManager.isActive) return
+
+        val context = getApplication<Application>()
+        val eligibleApps = state.data.filter { it.packageName != context.packageName && it.cacheBytes > 0L }
+        val totalBeforeBytes = eligibleApps.sumOf { it.cacheBytes }
+        val beforeBytesMap = eligibleApps.associate { it.packageName to it.cacheBytes }
+
+        viewModelScope.launch {
+            _metricState.value = _metricState.value.copy(
+                isCleaning = true,
+                isPurging = true,
+                cleaningError = null,
+                snackbarMessage = null,
+                activeStrategy = CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST,
+                currentCleanIndex = 1,
+                totalCleanApps = 1,
+                currentCleanAppName = "Penyimpanan Sistem Android"
+            )
+
+            CleanSessionManager.startSession(SystemCacheStrategy.SYSTEM_TARGET_PACKAGE)
+            CleanSessionManager.markExecuting(CleaningCapability.SYSTEM_WIDE_CACHE_REQUEST)
+
+            val plan = CleaningPlan(
+                mode = CleaningMode.SYSTEM_WIDE,
+                targets = emptyList(),
+                totalTargets = 1,
+                estimatedReclaim = totalBeforeBytes
+            )
+
+            val result = orchestrator.executePlan(context, plan, beforeBytesMap)
+            when (result.overallStatus) {
+                VerificationStatus.WAITING_FOR_SYSTEM_ACTION,
+                VerificationStatus.PENDING_VERIFICATION -> {
+                    pendingCleaningResult = result
+                    CleanSessionManager.markWaitingForResume(result)
+                }
+                else -> handleFinalResult(result)
+            }
+        }
+    }
+
+    /**
      * V8 FIX (§59): Batalkan sesi pembersihan aktif.
      */
     fun cancelCleaning() {
@@ -373,7 +456,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             isPurging = false,
             cleaningTarget = null,
             currentCleanAppName = null,
-            snackbarMessage = "Pembersihan dibatalkan"
+            snackbarMessage = "Pembersihan dihentikan"
         )
     }
 
@@ -439,6 +522,21 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
             VerificationStatus.FAILED ->
                 "Pembersihan gagal dieksekusi. Silakan hapus cache secara manual melalui Pengaturan."
+
+            VerificationStatus.USER_SKIPPED ->
+                "Aplikasi dilewati oleh pengguna."
+
+            VerificationStatus.STOPPED ->
+                "Sesi pembersihan dihentikan oleh pengguna."
+
+            VerificationStatus.AUTOMATION_FAILED ->
+                "Otomasi aksesibilitas tidak dapat menemukan tombol hapus cache yang aman."
+
+            VerificationStatus.NAVIGATION_FAILED ->
+                "Gagal membuka halaman pengaturan aplikasi."
+
+            VerificationStatus.TARGET_UNAVAILABLE ->
+                "Aplikasi target tidak tersedia atau telah dicopot."
 
             VerificationStatus.UNKNOWN ->
                 "Hasil tidak dapat diverifikasi."
