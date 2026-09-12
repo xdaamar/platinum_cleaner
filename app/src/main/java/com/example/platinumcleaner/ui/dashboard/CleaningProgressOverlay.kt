@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -26,6 +27,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,16 +47,17 @@ import com.example.platinumcleaner.ui.theme.PlatinumOutlineVariant
 import com.example.platinumcleaner.ui.theme.PlatinumSurface
 
 /**
- * CleaningProgressOverlay — Real-Time Progress UI (Sprint V8 Realigned).
+ * CleaningProgressOverlay — Real-Time Progress UI (Sprint V8/V9 Realigned).
  *
- * Sesuai ai_task.md §18, §19, §59:
- * - Mode System-Wide: Menampilkan "Penyimpanan Sistem Android", tanpa counter "1 / 5" fiktif
+ * Sesuai ai_task.md §18, §19, §26, §30, §59:
+ * - Mode System-Wide: Menampilkan "Penyimpanan Sistem Android", tanpa counter fiktif
  * - Mode Per-App: Menampilkan kemajuan nyata "X / Y" dan nama aplikasi target
- * - Tombol Batal: Memberikan kontrol penuh kepada pengguna untuk membatalkan sesi
+ * - Tombol Lewati (Skip): Melompati aplikasi aktif dan lanjut ke target berikutnya
+ * - Tombol Batal & Dialog Konfirmasi: Penghentian sesi pembersihan secara aman
  *
  * Desain "Quiet Luxury":
  * - Surface putih/abu muda dengan shadow tipis
- * - Lebar 65% layar (tidak full width)
+ * - Lebar 68% layar (tidak full width)
  * - AnimatedVisibility: slideInVertically / slideOutVertically (60fps GPU-friendly)
  * - LinearProgressIndicator tipis 3dp
  */
@@ -69,9 +74,53 @@ fun CleaningProgressOverlay(
     val totalApps = metricState.totalCleanApps
     val appName = metricState.currentCleanAppName ?: metricState.cleaningTarget ?: "..."
 
+    var showStopConfirmDialog by remember { mutableStateOf(false) }
+
     val progress = if (totalApps > 0) {
         (currentIndex.toFloat() / totalApps.toFloat()).coerceIn(0f, 1f)
     } else 0f
+
+    // Dialog konfirmasi penghentian pembersihan (§30)
+    if (showStopConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showStopConfirmDialog = false },
+            title = {
+                Text(
+                    text = "Hentikan Pembersihan?",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "Sesi pembersihan untuk aplikasi yang tersisa akan dibatalkan secara aman.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = PlatinumOnSurfaceVariant
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showStopConfirmDialog = false
+                        viewModel.stopCleaning()
+                    }
+                ) {
+                    Text(
+                        text = "Hentikan",
+                        fontWeight = FontWeight.Bold,
+                        color = PlatinumAccent
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showStopConfirmDialog = false }) {
+                    Text(text = "Lanjutkan", color = PlatinumOnSurface)
+                }
+            },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = PlatinumSurface
+        )
+    }
 
     Box(
         modifier = modifier
@@ -99,7 +148,7 @@ fun CleaningProgressOverlay(
                 Column(
                     modifier = Modifier.padding(Dimens.SpacingMD)
                 ) {
-                    // Header row: label + pulse dot + cancel action
+                    // Header row: label + pulse dot + skip/stop actions
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -123,18 +172,38 @@ fun CleaningProgressOverlay(
                             )
                         }
 
-                        // Tombol Batal
-                        TextButton(
-                            onClick = { viewModel.cancelCleaning() },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                            modifier = Modifier.height(20.dp)
+                        // Actions: Lewati (Skip §26) & Batal (Stop §30)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(
-                                text = "Batal",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = PlatinumOnSurfaceVariant,
-                                fontSize = 10.sp
-                            )
+                            if (!isSystemWide && totalApps > 1) {
+                                TextButton(
+                                    onClick = { viewModel.skipCurrentApp() },
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(20.dp)
+                                ) {
+                                    Text(
+                                        text = "Lewati",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = PlatinumAccent,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+
+                            TextButton(
+                                onClick = { showStopConfirmDialog = true },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                modifier = Modifier.height(20.dp)
+                            ) {
+                                Text(
+                                    text = "Batal",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = PlatinumOnSurfaceVariant,
+                                    fontSize = 10.sp
+                                )
+                            }
                         }
                     }
 

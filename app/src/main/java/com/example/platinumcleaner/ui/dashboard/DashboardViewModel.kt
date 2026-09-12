@@ -558,6 +558,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 isPurging = false,
                 isCleaned = isAnySuccess,
                 lastCleaningResult = result,
+                showCleaningSummary = true,
                 snackbarMessage = snackbar,
                 currentCleanIndex = 0,
                 totalCleanApps = 0,
@@ -573,6 +574,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             delay(1_000)
             loadData()
         }
+    }
+
+    /**
+     * Menutup dialog ringkasan hasil pembersihan.
+     */
+    fun dismissCleaningSummary() {
+        _metricState.value = _metricState.value.copy(showCleaningSummary = false)
     }
 
 

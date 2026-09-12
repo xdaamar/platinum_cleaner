@@ -35,7 +35,9 @@ data class StorageMetricState(
     /** Strategy yang sedang/terakhir digunakan — ditampilkan di UI (honest wording §22) */
     val activeStrategy: CleaningCapability? = null,
     /** Hasil terverifikasi dari sesi terakhir */
-    val lastCleaningResult: CleaningResult? = null
+    val lastCleaningResult: CleaningResult? = null,
+    /** Tampilkan dialog ringkasan hasil pembersihan */
+    val showCleaningSummary: Boolean = false
 )
 
 enum class DashboardNavTab(

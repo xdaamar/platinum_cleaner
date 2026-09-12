@@ -178,6 +178,14 @@ fun DashboardScreen(
         )
     }
 
+    // V9: Real Cleaning Summary Bottom Sheet
+    if (metricState.showCleaningSummary && metricState.lastCleaningResult != null) {
+        CleaningSummarySheet(
+            result = metricState.lastCleaningResult!!,
+            onDismiss = { viewModel.dismissCleaningSummary() }
+        )
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = { TopHeaderBar() },
@@ -903,6 +911,186 @@ fun ErrorCard(message: String, modifier: Modifier = Modifier) {
         Row(Modifier.fillMaxWidth().padding(Dimens.SpacingMD), Arrangement.spacedBy(Dimens.SpacingSM), Alignment.CenterVertically) {
             Icon(painterResource(R.drawable.ic_shield_check), null, tint = PlatinumOnSurfaceVariant, modifier = Modifier.size(18.dp))
             Text(message.ifBlank { stringResource(R.string.error_text) }, style = MaterialTheme.typography.bodySmall, color = PlatinumOnSurfaceVariant)
+        }
+    }
+}
+
+// ===================================================
+// V9: Cleaning Summary Bottom Sheet
+// ===================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CleaningSummarySheet(
+    result: com.example.platinumcleaner.domain.cleaning.CleaningResult,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val totalReclaimed = result.totalReclaimedBytes
+    val formattedReclaimed = com.example.platinumcleaner.domain.verification.VerificationEngine.formatBytes(totalReclaimed)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = PlatinumSurface,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.SpacingLG)
+                .navigationBarsPadding()
+        ) {
+            Spacer(modifier = Modifier.height(Dimens.SpacingXS))
+
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Ringkasan Pembersihan",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = PlatinumOnSurface
+                    )
+                    Text(
+                        text = if (totalReclaimed > 0) "$formattedReclaimed berhasil dibersihkan" else "Tidak ada cache yang berkurang",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PlatinumOnSurfaceVariant
+                    )
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Tutup", color = PlatinumOnSurfaceVariant, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.SpacingMD))
+
+            // Stats row
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(Dimens.RadiusMD),
+                color = PlatinumSurfaceContainerLow
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(Dimens.SpacingMD),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${result.appResults.size}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(text = "Total Target", style = MaterialTheme.typography.labelSmall, color = PlatinumOnSurfaceVariant)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${result.successCount}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(text = "Berhasil", style = MaterialTheme.typography.labelSmall, color = PlatinumOnSurfaceVariant)
+                    }
+                    val skippedCount = result.appResults.count { it.status == com.example.platinumcleaner.domain.cleaning.VerificationStatus.USER_SKIPPED }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "$skippedCount",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(text = "Dilewati", style = MaterialTheme.typography.labelSmall, color = PlatinumOnSurfaceVariant)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${result.failedCount}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PlatinumOnSurface
+                        )
+                        Text(text = "Belum Berubah", style = MaterialTheme.typography.labelSmall, color = PlatinumOnSurfaceVariant)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.SpacingMD))
+
+            // App results list
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp),
+                verticalArrangement = Arrangement.spacedBy(Dimens.SpacingXS)
+            ) {
+                items(result.appResults.size) { index ->
+                    val item = result.appResults[index]
+                    val reclaimed = maxOf(0L, item.beforeBytes - if (item.afterBytes >= 0L) item.afterBytes else item.beforeBytes)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(Dimens.RadiusSM),
+                        color = PlatinumSurfaceContainerLowest
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(Dimens.SpacingSM),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.appName.ifBlank { item.packageName },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = when (item.status) {
+                                        com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_SUCCESS ->
+                                            "Berkurang ${com.example.platinumcleaner.domain.verification.VerificationEngine.formatBytes(reclaimed)}"
+                                        com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_PARTIAL ->
+                                            "Sebagian: ${com.example.platinumcleaner.domain.verification.VerificationEngine.formatBytes(reclaimed)}"
+                                        com.example.platinumcleaner.domain.cleaning.VerificationStatus.USER_SKIPPED -> "Dilewati pengguna"
+                                        com.example.platinumcleaner.domain.cleaning.VerificationStatus.NO_MEASURABLE_CHANGE -> "Tidak ada perubahan terukur"
+                                        com.example.platinumcleaner.domain.cleaning.VerificationStatus.AUTOMATION_FAILED -> "Otomasi gagal"
+                                        com.example.platinumcleaner.domain.cleaning.VerificationStatus.TARGET_UNAVAILABLE -> "Aplikasi tidak tersedia"
+                                        else -> "Status: ${item.status.name}"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = PlatinumOnSurfaceVariant
+                                )
+                            }
+                            Text(
+                                text = when (item.status) {
+                                    com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_SUCCESS -> "✓ Bersih"
+                                    com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_PARTIAL -> "Sebagian"
+                                    com.example.platinumcleaner.domain.cleaning.VerificationStatus.USER_SKIPPED -> "Dilewati"
+                                    com.example.platinumcleaner.domain.cleaning.VerificationStatus.NO_MEASURABLE_CHANGE -> "0 B"
+                                    else -> "Gagal"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (item.status == com.example.platinumcleaner.domain.cleaning.VerificationStatus.VERIFIED_SUCCESS)
+                                    PlatinumPrimary else PlatinumOnSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.SpacingMD))
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(Dimens.RadiusMD),
+                colors = ButtonDefaults.buttonColors(containerColor = PlatinumPrimary, contentColor = PlatinumOnPrimary)
+            ) {
+                Text("Selesai", fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(modifier = Modifier.height(Dimens.SpacingLG))
         }
     }
 }
