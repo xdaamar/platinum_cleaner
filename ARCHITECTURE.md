@@ -6,14 +6,16 @@ Platinum Cleaner menggunakan **Capability-Based Architecture** yang memisahkan *
 
 Tujuan akhir: **Platinum Cleaner tidak membutuhkan Accessibility Service untuk menjadi aplikasi cleaner yang berguna.** Accessibility hanyalah salah satu adapter opsional.
 
-> **Sprint V8 & V9 Update**: Real Per-App Automated Cleaning Engine & Full Inventory Integrity.
-> Rekonstruksi total arsitektur inventaris aplikasi dan engine pembersihan otomatis:
-> - Mengubah Start Clean menjadi engine per-aplikasi nyata (`PER_APP_AUTOMATED` saat Accessibility aktif, fallback `PER_APP_ASSISTED`).
-> - Menjadikan `ACTION_CLEAR_APP_CACHE` sebagai secondary feature terpisah, menghentikan pembajakan tombol Start Clean oleh mode sistem.
-> - Mempertahankan aplikasi ber-cache 0 B di inventaris (zero-cache retention) namun mengecualikannya dari target pembersihan otomatis.
-> - Menegakkan **Hukum Besi (§15)**: Menolak keras tombol Clear Data / Hapus Data dalam kondisi apapun via `SettingsNodeResolver`.
-> - Memperkenalkan `CleaningSession` sebagai state machine terstruktur, mendukung `skipCurrentApp()` dan `stopCleaning()`.
-> - Menyediakan `CleaningSummarySheet` untuk transparansi penuh hasil verifikasi per-aplikasi.
+> **Sprint V10 Update**: Interactive Assisted Queue Engine (Asisten Pembersihan Interaktif Berantai).
+> Solusi definitif untuk kendala kompatibilitas modern (Android 14 / Samsung One UI 6 Restricted Settings):
+> - Menggantikan bot Accessibility otomatis yang rapuh dengan **Interactive Assisted Queue**:
+>   - Mengantrekan seluruh aplikasi ber-cache (`cacheBytes > 0 B`) tanpa batasan artifisial.
+>   - Meluncurkan halaman Pengaturan Info Aplikasi via `AppInfoNavigator`.
+>   - Menampilkan kartu asisten melayang (`FloatingAssistantService`) dengan navigasi cepat: `[Lewati]`, `[Lanjut ke [App Selanjutnya] ➔]`, `[✕]`.
+>   - Pengguna cukup mengetuk *Penyimpanan* ➔ *Hapus Memori* (100% aman, 0% risiko hapus data), lalu ketuk *Lanjut* pada floating card untuk langsung pindah ke aplikasi berikutnya seketika.
+>   - Menyediakan kartu cadangan di dalam aplikasi (`InteractiveQueueCard`) jika pengguna memilih tidak mengaktifkan izin overlay.
+>   - Mendukung pembersihan batch kustom langsung dari `ViewAllInventorySheet`.
+>   - Pada akhir sesi, service secara otomatis memandu kembali ke Platinum Cleaner dan menjalankan verifikasi delta `StorageStatsManager` serta menampilkan `CleaningSummarySheet`.
 
 ---
 
@@ -94,6 +96,7 @@ app/src/main/java/com/example/platinumcleaner/
 │   │   ├── CleaningRequest.kt      ← Input ke Orchestrator
 │   │   ├── CleaningResult.kt       ← Output Orchestrator + VerificationStatus
 │   │   ├── CleaningSession.kt      ← State machine pembersihan sekuensial
+│   │   ├── InteractiveQueue.kt     ← [V10] Immutable interactive assisted queue model
 │   │   ├── CleaningTarget.kt       ← Target pembersihan individual
 │   │   ├── CleaningUiState.kt      ← Representasi state UI pembersihan
 │   │   ├── NavigationResult.kt     ← Status navigasi Settings
@@ -106,13 +109,15 @@ app/src/main/java/com/example/platinumcleaner/
 ├── platform/                        ← Android-specific implementations
 │   └── cleaning/
 │       ├── CapabilityResolver.kt              ← Deteksi kemampuan & resolusi mode
+│       ├── InteractiveCleanManager.kt         ← [V10] Active assisted queue coordinator
 │       ├── CleaningOrchestrator.kt            ← Coordinator strategy + fallback + verify
 │       ├── AppInfoNavigator.kt                ← Validasi paket & navigasi aman
 │       ├── SystemCacheStrategy.kt             ← ACTION_CLEAR_APP_CACHE
 │       ├── PerAppIntentStrategy.kt            ← ACTION_APPLICATION_DETAILS_SETTINGS
 │       └── AccessibilityAutomationStrategy.kt ← Accessibility automated adapter
 │
-├── service/                         ← Accessibility & Session management
+├── service/                         ← Accessibility, Floating Assistant & Session
+│   ├── FloatingAssistantService.kt ← [V10] Draggable floating assistant over Settings
 │   ├── PlatinumCleanerService.kt   ← Accessibility engine with bounded return
 │   ├── SettingsNodeResolver.kt     ← Strict Clear Data rejection & multi-language cache detection
 │   ├── AutomationProtocol.kt       ← AutomationCommand & AutomationCommandResult
@@ -125,14 +130,15 @@ app/src/main/java/com/example/platinumcleaner/
 │
 ├── ui/
 │   └── dashboard/
-│       ├── DashboardScreen.kt          ← Main screen, ViewAllInventorySheet, CleaningSummarySheet
+│       ├── DashboardScreen.kt          ← Main screen, OverlaySheet, QueueCard, ViewAllInventorySheet, CleaningSummarySheet
 │       ├── DashboardComponents.kt      ← Reusable luxury components
 │       ├── DashboardViewModel.kt       ← Lifecycle & state orchestration
 │       ├── DashboardModels.kt          ← ScanState, InventorySummary, AppInfo
 │       └── CleaningProgressOverlay.kt  ← Floating overlay with Skip & Stop confirmation
 │
 └── util/
-    └── PermissionHelper.kt
+    ├── PermissionHelper.kt
+    └── OverlayPermissionHelper.kt  ← [V10] SYSTEM_ALERT_WINDOW helper
 ```
 
 ---
