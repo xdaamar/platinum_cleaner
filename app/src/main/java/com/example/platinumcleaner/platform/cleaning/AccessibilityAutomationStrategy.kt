@@ -11,6 +11,7 @@ import com.example.platinumcleaner.domain.cleaning.CleaningCapability
 import com.example.platinumcleaner.domain.cleaning.CleaningRequest
 import com.example.platinumcleaner.domain.cleaning.CleaningResult
 import com.example.platinumcleaner.domain.cleaning.CleaningStrategy
+import com.example.platinumcleaner.domain.cleaning.NavigationResult
 import com.example.platinumcleaner.domain.cleaning.VerificationStatus
 import com.example.platinumcleaner.service.CleanSessionManager
 
@@ -47,53 +48,68 @@ class AccessibilityAutomationStrategy : CleaningStrategy {
         val targetPackage = request.targetPackages.first()
         val beforeBytes = request.preCleanCacheBytes[targetPackage] ?: 0L
 
-        return try {
-            CleanSessionManager.startSession(targetPackage)
-            CleanSessionManager.markExecuting(capability)
+        val appName = getAppName(context, targetPackage)
+        val navResult = AppInfoNavigator.navigateToAppInfo(context, targetPackage)
 
-            val intent = Intent(
-                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                Uri.fromParts("package", targetPackage, null)
-            ).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-
-            if (intent.resolveActivity(context.packageManager) == null) {
-                Log.w(tag, "Intent detail settings tidak dapat di-resolve untuk $targetPackage")
-                return CleaningResult(
+        return when (navResult) {
+            NavigationResult.APP_INFO_OPENED -> {
+                val appResult = AppCleanResult(
+                    packageName = targetPackage,
+                    appName = appName,
+                    beforeBytes = beforeBytes,
+                    afterBytes = -1L,
+                    status = VerificationStatus.PENDING_VERIFICATION,
+                    usedCapability = capability
+                )
+                CleaningResult(
                     requestId = request.requestId,
-                    appResults = emptyList(),
+                    appResults = listOf(appResult),
+                    selectedCapability = capability,
+                    overallStatus = VerificationStatus.PENDING_VERIFICATION
+                )
+            }
+            NavigationResult.TARGET_UNAVAILABLE -> {
+                val appResult = AppCleanResult(
+                    packageName = targetPackage,
+                    appName = appName,
+                    beforeBytes = beforeBytes,
+                    afterBytes = -1L,
+                    status = VerificationStatus.TARGET_UNAVAILABLE,
+                    usedCapability = capability,
+                    errorMessage = "Aplikasi target tidak tersedia atau dinonaktifkan"
+                )
+                CleaningResult(
+                    requestId = request.requestId,
+                    appResults = listOf(appResult),
+                    selectedCapability = capability,
+                    overallStatus = VerificationStatus.TARGET_UNAVAILABLE
+                )
+            }
+            NavigationResult.APP_INFO_NOT_OPENED -> {
+                val appResult = AppCleanResult(
+                    packageName = targetPackage,
+                    appName = appName,
+                    beforeBytes = beforeBytes,
+                    afterBytes = -1L,
+                    status = VerificationStatus.INTENT_UNAVAILABLE,
+                    usedCapability = capability,
+                    errorMessage = "Halaman detail aplikasi tidak tersedia"
+                )
+                CleaningResult(
+                    requestId = request.requestId,
+                    appResults = listOf(appResult),
                     selectedCapability = capability,
                     overallStatus = VerificationStatus.INTENT_UNAVAILABLE
                 )
             }
-
-            context.startActivity(intent)
-            Log.d(tag, "Navigating to Settings with Accessibility automation for: $targetPackage")
-
-            val appResult = AppCleanResult(
-                packageName = targetPackage,
-                appName = getAppName(context, targetPackage),
-                beforeBytes = beforeBytes,
-                afterBytes = -1L,
-                status = VerificationStatus.PENDING_VERIFICATION,
-                usedCapability = capability
-            )
-
-            CleaningResult(
-                requestId = request.requestId,
-                appResults = listOf(appResult),
-                selectedCapability = capability,
-                overallStatus = VerificationStatus.PENDING_VERIFICATION
-            )
-        } catch (e: Exception) {
-            Log.e(tag, "Error saat eksekusi otomasi accessibility untuk $targetPackage: ${e.message}")
-            CleaningResult(
-                requestId = request.requestId,
-                appResults = emptyList(),
-                selectedCapability = capability,
-                overallStatus = VerificationStatus.FAILED
-            )
+            else -> {
+                CleaningResult(
+                    requestId = request.requestId,
+                    appResults = emptyList(),
+                    selectedCapability = capability,
+                    overallStatus = VerificationStatus.NAVIGATION_FAILED
+                )
+            }
         }
     }
 
