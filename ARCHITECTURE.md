@@ -6,7 +6,14 @@ Platinum Cleaner menggunakan **Capability-Based Architecture** yang memisahkan *
 
 Tujuan akhir: **Platinum Cleaner tidak membutuhkan Accessibility Service untuk menjadi aplikasi cleaner yang berguna.** Accessibility hanyalah salah satu adapter opsional.
 
-> **Sprint V8 Update**: Cleaning Engine Realignment & Full Inventory Rebuild — Rekonstruksi total arsitektur inventaris aplikasi dan engine pembersihan. Memperbaiki pemisahan semantik antara System-Wide Mode dan Per-App Mode, menghilangkan batasan buatan (5-app limit), mengisolasi error scanner per-package, serta mengimplementasikan verifikasi dual-path (aggregate vs package-level).
+> **Sprint V8 & V9 Update**: Real Per-App Automated Cleaning Engine & Full Inventory Integrity.
+> Rekonstruksi total arsitektur inventaris aplikasi dan engine pembersihan otomatis:
+> - Mengubah Start Clean menjadi engine per-aplikasi nyata (`PER_APP_AUTOMATED` saat Accessibility aktif, fallback `PER_APP_ASSISTED`).
+> - Menjadikan `ACTION_CLEAR_APP_CACHE` sebagai secondary feature terpisah, menghentikan pembajakan tombol Start Clean oleh mode sistem.
+> - Mempertahankan aplikasi ber-cache 0 B di inventaris (zero-cache retention) namun mengecualikannya dari target pembersihan otomatis.
+> - Menegakkan **Hukum Besi (§15)**: Menolak keras tombol Clear Data / Hapus Data dalam kondisi apapun via `SettingsNodeResolver`.
+> - Memperkenalkan `CleaningSession` sebagai state machine terstruktur, mendukung `skipCurrentApp()` dan `stopCleaning()`.
+> - Menyediakan `CleaningSummarySheet` untuk transparansi penuh hasil verifikasi per-aplikasi.
 
 ---
 
@@ -17,9 +24,10 @@ Tujuan akhir: **Platinum Cleaner tidak membutuhkan Accessibility Service untuk m
 │                         Presentation Layer                       │
 │                                                                  │
 │  DashboardScreen (Jetpack Compose)                               │
-│    ├── HeroStorageCard & Action Buttons                          │
-│    ├── ViewAllInventorySheet (Real package modal bottom sheet)    │
-│    ├── CleaningProgressOverlay (Mode-dependent real-time UI)     │
+│    ├── HeroStorageCard & Primary Clean Action (Per-App Default)  │
+│    ├── ViewAllInventorySheet (Real package discovery & search)   │
+│    ├── CleaningProgressOverlay (Real-time progress, Skip, Stop)  │
+│    ├── CleaningSummarySheet (Transparent verified results)       │
 │    └── observes StateFlow dari DashboardViewModel                │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
@@ -27,8 +35,8 @@ Tujuan akhir: **Platinum Cleaner tidak membutuhkan Accessibility Service untuk m
 │                         ViewModel Layer                           │
 │                                                                  │
 │  DashboardViewModel                                              │
-│    ├── AppCleanerRepository (Discovery & Cache Scanner)          │
-│    ├── CleanSessionManager (State machine & batch queue)         │
+│    ├── AppCleanerRepository (Discovery, 0 B retention, Scanner)  │
+│    ├── CleanSessionManager (State machine, batch targets)        │
 │    └── CleaningOrchestrator (Execution coordinator)              │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
@@ -36,7 +44,8 @@ Tujuan akhir: **Platinum Cleaner tidak membutuhkan Accessibility Service untuk m
 │                        Platform Layer                             │
 │                                                                  │
 │  CleaningOrchestrator                                            │
-│    ├── CapabilityResolver → resolveMode / isSystemWideAvailable  │
+│    ├── CapabilityResolver → resolveMode / isAccessibilityAvail   │
+│    ├── AppInfoNavigator → Safe Settings activity navigation      │
 │    ├── Strategy Execution via CleaningPlan:                      │
 │    │    ├── SystemCacheStrategy (StorageManager.ACTION_CLEAR)    │
 │    │    ├── PerAppIntentStrategy (ACTION_APPLICATION_DETAILS)   │
@@ -48,13 +57,23 @@ Tujuan akhir: **Platinum Cleaner tidak membutuhkan Accessibility Service untuk m
 └──────────────────────────────┬──────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────┐
+│                         Service Layer                             │
+│                                                                  │
+│  PlatinumCleanerService                                          │
+│    ├── SettingsNodeResolver (Strict Clear Data guard, scoring)   │
+│    ├── AutomationProtocol (Semantics commands & results)         │
+│    ├── AccessibilityNodeHelper (Multi-language recursive matcher)│
+│    └── Bounded Return to Platinum Cleaner                        │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────┐
 │                         Domain Layer                              │
 │                                                                  │
-│  CleaningPlan (Mode: SYSTEM_WIDE, PER_APP_ASSISTED, AUTOMATED)   │
-│  CleaningStrategy (Interface)                                    │
-│  CleaningRequest / CleaningResult / AppCleanResult               │
-│  CleaningCapability (Enum priority order)                        │
-│  VerificationStatus (Honest outcome states)                      │
+│  CleaningSession (Deterministic state machine: next, skip, stop) │
+│  CleaningTarget (Per-package model: label, bytes, eligibility)   │
+│  ScanResult (Authoritative single source of truth)               │
+│  CleaningPlan / CleaningRequest / CleaningResult / AppCleanResult │
+│  VerificationStatus (Honest outcome states: VERIFIED_SUCCESS...) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -74,7 +93,13 @@ app/src/main/java/com/example/platinumcleaner/
 │   │   ├── CleaningPlan.kt         ← Rencana pembersihan eksplisit
 │   │   ├── CleaningRequest.kt      ← Input ke Orchestrator
 │   │   ├── CleaningResult.kt       ← Output Orchestrator + VerificationStatus
+│   │   ├── CleaningSession.kt      ← State machine pembersihan sekuensial
+│   │   ├── CleaningTarget.kt       ← Target pembersihan individual
+│   │   ├── CleaningUiState.kt      ← Representasi state UI pembersihan
+│   │   ├── NavigationResult.kt     ← Status navigasi Settings
 │   │   └── CleaningStrategy.kt     ← Interface untuk semua strategy
+│   ├── inventory/
+│   │   └── ScanResult.kt           ← Single Source of Truth inventaris
 │   └── verification/
 │       └── VerificationEngine.kt   ← Dual-path verification (aggregate + package-level)
 │
@@ -82,26 +107,29 @@ app/src/main/java/com/example/platinumcleaner/
 │   └── cleaning/
 │       ├── CapabilityResolver.kt              ← Deteksi kemampuan & resolusi mode
 │       ├── CleaningOrchestrator.kt            ← Coordinator strategy + fallback + verify
+│       ├── AppInfoNavigator.kt                ← Validasi paket & navigasi aman
 │       ├── SystemCacheStrategy.kt             ← ACTION_CLEAR_APP_CACHE
 │       ├── PerAppIntentStrategy.kt            ← ACTION_APPLICATION_DETAILS_SETTINGS
 │       └── AccessibilityAutomationStrategy.kt ← Accessibility automated adapter
 │
 ├── service/                         ← Accessibility & Session management
-│   ├── PlatinumCleanerService.kt   ← Accessibility adapter (optional)
-│   ├── AccessibilityNodeHelper.kt  ← Multi-language node finder
+│   ├── PlatinumCleanerService.kt   ← Accessibility engine with bounded return
+│   ├── SettingsNodeResolver.kt     ← Strict Clear Data rejection & multi-language cache detection
+│   ├── AutomationProtocol.kt       ← AutomationCommand & AutomationCommandResult
+│   ├── AccessibilityNodeHelper.kt  ← Traversal rekursif & safe click
 │   ├── ServiceEventBus.kt          ← Reactive event bridge
-│   └── CleanSessionManager.kt      ← Strategy-agnostic state machine & queue
+│   └── CleanSessionManager.kt      ← State machine & batch targets queue
 │
 ├── data/
-│   └── AppCleanerRepository.kt     ← Full inventory discovery & robust cache scanner
+│   └── AppCleanerRepository.kt     ← Full inventory discovery, 0 B retention, cache scanner
 │
 ├── ui/
 │   └── dashboard/
-│       ├── DashboardScreen.kt          ← Main screen + ViewAllInventorySheet
+│       ├── DashboardScreen.kt          ← Main screen, ViewAllInventorySheet, CleaningSummarySheet
 │       ├── DashboardComponents.kt      ← Reusable luxury components
 │       ├── DashboardViewModel.kt       ← Lifecycle & state orchestration
 │       ├── DashboardModels.kt          ← ScanState, InventorySummary, AppInfo
-│       └── CleaningProgressOverlay.kt  ← Mode-aware floating overlay
+│       └── CleaningProgressOverlay.kt  ← Floating overlay with Skip & Stop confirmation
 │
 └── util/
     └── PermissionHelper.kt
@@ -109,31 +137,25 @@ app/src/main/java/com/example/platinumcleaner/
 
 ---
 
-## Sprint V8 Architectural Pillars
+## Core Engineering Invariants & Security Guardrails
 
-### 1. Inventory Truth & Real Package Data
-- **Discovery**: `PackageManager.getInstalledPackages(PackageManager.GET_META_DATA)` mengembalikan seluruh paket asli di perangkat.
-- **Deduplikasi**: Paket dideduplikasi berdasarkan `packageName`.
-- **Klasifikasi**: Memisahkan aplikasi pengguna (`FLAG_SYSTEM == 0`) dari paket framework sistem (`FLAG_SYSTEM != 0`) dan memverifikasi `isLaunchable` via `getLaunchIntentForPackage`.
-- **UI Inventory**: Tidak ada dialog kosong; `ViewAllInventorySheet` menyediakan pencarian real-time dan filter chips (Semua, Pengguna, Sistem).
+### 1. Invariant Mutlak: Dilarang Keras Menghapus Data Pengguna (§15)
+- Tombol **Clear Data / Hapus Data / Atur Penyimpanan / Kelola Ruang** MUTLAK DITOLAK dalam kondisi apapun oleh `SettingsNodeResolver.isDangerousClearData()` dan `AccessibilityNodeHelper`.
+- Kata kunci berbahaya dari berbagai bahasa (EN, ID, ES, DE, IT, PT, FR) dan resource ID destruktif (`clear_data`, `clear_storage`) diblokir secara proaktif sebelum aksi klik dilakukan.
 
-### 2. Isolated Cache Scanner
-- Pengambilan cache per aplikasi menggunakan `StorageStatsManager.queryStatsForPackage`.
-- Setiap kegagalan paket (`SecurityException`, `NameNotFoundException`, `IOException`) diisolasi dalam blok try/catch individual sehingga tidak membatalkan pemindaian keseluruhan.
-- Status pemindaian eksplisit: `SCANNING`, `SUCCESS`, `PARTIAL`, `EMPTY`, `PERMISSION_REQUIRED`.
-- Total cache dihitung dari akumulasi aktual paket yang berhasil diukur.
+### 2. Inventaris Nyata & Retensi Aplikasi 0 B (§6, §27, §39)
+- Semua aplikasi terinstal dipertahankan dalam inventaris, termasuk aplikasi yang ber-cache 0 B, sehingga pengguna dapat melihat status "0 B (Bersih)".
+- Aplikasi ber-cache 0 B dikecualikan dari antrian target pembersihan otomatis guna mencegah navigasi sia-sia ke aplikasi yang sudah bersih.
 
-### 3. Semantic Cleaning Mode Separation
-- **System-Wide Mode**: Meminta pembersihan cache seluruh sistem melalui `StorageManager.ACTION_CLEAR_APP_CACHE`. Merupakan 1 operasi sistem tunggal, tidak berpura-pura menjadi antrean penghapusan per-aplikasi.
-- **Per-App Assisted Mode**: Membuka halaman Info Aplikasi spesifik via `Settings.ACTION_APPLICATION_DETAILS_SETTINGS` dengan package URI untuk dieksekusi oleh pengguna.
-- **Per-App Automated Mode**: Membantu navigasi dan penekanan tombol Hapus Cache melalui Accessibility Service jika diaktifkan secara eksplisit.
-- **Targeted Single App Guard**: Pembersihan aplikasi target spesifik dilarang keras menggunakan mode system-wide.
+### 3. Pemisahan Mode Pembersihan (§2, §16, §17, §37)
+- **Start Clean** selalu memprioritaskan pembersihan nyata per-aplikasi (`PER_APP_AUTOMATED` bila Accessibility aktif, fallback ke `PER_APP_ASSISTED`).
+- `ACTION_CLEAR_APP_CACHE` tidak lagi membajak tombol Start Clean dan hanya dijalankan bila pengguna memilih fitur pembersihan sistem secara eksplisit.
 
-### 4. Dual-Path Verification Engine
-- **System-Wide Verification**: Menghitung delta total aggregate cache sebelum dan sesudah tindakan (`queryAggregateCacheBytes`). Jika pengurangan tidak terukur, dilaporkan secara jujur sebagai `NO_MEASURABLE_CHANGE` (bukan `FAILED`).
-- **Per-App Verification**: Menggunakan staged sampling (T0=0ms, T1=500ms, T2=1500ms, T3=3000ms, T4=5000ms) dengan early-exit saat pengurangan terdeteksi.
+### 4. Navigasi Terverifikasi & Bounded Return (§10, §16, §45)
+- Sebelum meluncurkan `Settings.ACTION_APPLICATION_DETAILS_SETTINGS`, `AppInfoNavigator` memvalidasi keberadaan paket di `PackageManager`, status aktif (enabled), dan ketersediaan Activity resolver.
+- Setelah pembersihan seluruh target selesai, service melakukan navigasi terikat (bounded) kembali ke aplikasi Platinum Cleaner.
 
-### 5. Removal of Artificial Limitations
-- Menghapus batasan `take(5)` dari domain dan session manager.
-- Antrean batch dapat memproses seluruh aplikasi yang memenuhi syarat secara sekuensial.
-- Sesi pembersihan mendukung pembatalan (`cancelSession()`) kapan saja oleh pengguna.
+### 5. Verifikasi Jujur & Transparansi UX (§14, §17, §31, §33)
+- Verifikasi pasca-pembersihan menggunakan staged sampling (T0→T4) dengan query langsung dari `StorageStatsManager` tanpa merekayasa angka.
+- Hasil akhir ditampilkan transparan melalui `CleaningSummarySheet` dan pesan status yang jujur (`VERIFIED_SUCCESS`, `VERIFIED_PARTIAL`, `NO_MEASURABLE_CHANGE`, `USER_SKIPPED`, `STOPPED`).
+- Sesi pembersihan sepenuhnya berada di bawah kendali pengguna melalui tombol **Lewati (Skip)** dan dialog konfirmasi **Hentikan (Stop)**.
